@@ -2,52 +2,55 @@
 # All Rights Reserved.
 
 # Python
+import codecs
 import datetime
 import logging
+import os
 import time
 import json
-import base64
 from urlparse import urljoin
+
+import six
 
 # Django
 from django.conf import settings
 from django.db import models
 #from django.core.cache import cache
-import memcache
-from django.db.models import Q, Count
-from django.utils.dateparse import parse_datetime
-from dateutil import parser
-from dateutil.tz import tzutc
-from django.utils.encoding import force_text, smart_str
-from django.utils.timezone import utc
+from django.utils.encoding import smart_str
+from django.utils.timezone import now
 from django.utils.translation import ugettext_lazy as _
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, FieldDoesNotExist
+
+# REST Framework
+from rest_framework.exceptions import ParseError
 
 # AWX
 from awx.api.versioning import reverse
 from awx.main.models.base import * # noqa
+from awx.main.models.events import JobEvent, SystemJobEvent
 from awx.main.models.unified_jobs import * # noqa
 from awx.main.models.notifications import (
     NotificationTemplate,
     JobNotificationMixin,
 )
-from awx.main.utils import (
-    ignore_inventory_computed_fields,
-    parse_yaml_or_json,
-)
+from awx.main.utils import parse_yaml_or_json, getattr_dne
 from awx.main.fields import ImplicitRoleField
-from awx.main.models.mixins import ResourceMixin, SurveyJobTemplateMixin, SurveyJobMixin, TaskManagerJobMixin
-from awx.main.models.base import PERM_INVENTORY_SCAN
-from awx.main.fields import JSONField
-
-from awx.main.consumers import emit_channel_notification
+from awx.main.models.mixins import (
+    ResourceMixin,
+    SurveyJobTemplateMixin,
+    SurveyJobMixin,
+    TaskManagerJobMixin,
+    CustomVirtualEnvMixin,
+    RelatedJobsMixin,
+)
+from awx.main.fields import JSONField, AskForField
 
 
 logger = logging.getLogger('awx.main.models.jobs')
 analytics_logger = logging.getLogger('awx.analytics.job_events')
 system_tracking_logger = logging.getLogger('awx.analytics.system_tracking')
 
-__all__ = ['JobTemplate', 'Job', 'JobHostSummary', 'JobEvent', 'SystemJobOptions', 'SystemJobTemplate', 'SystemJob']
+__all__ = ['JobTemplate', 'JobLaunchConfig', 'Job', 'JobHostSummary', 'SystemJobTemplate', 'SystemJob']
 
 
 class JobOptions(BaseModel):
@@ -87,26 +90,6 @@ class JobOptions(BaseModel):
         max_length=1024,
         default='',
         blank=True,
-    )
-    credential = models.ForeignKey(
-        'Credential',
-        related_name='%(class)ss',
-        blank=True,
-        null=True,
-        default=None,
-        on_delete=models.SET_NULL,
-    )
-    vault_credential = models.ForeignKey(
-        'Credential',
-        related_name='%(class)ss_as_vault_credential+',
-        blank=True,
-        null=True,
-        default=None,
-        on_delete=models.SET_NULL,
-    )
-    extra_credentials = models.ManyToManyField(
-        'Credential',
-        related_name='%(class)ss_as_extra_credential+',
     )
     forks = models.PositiveIntegerField(
         blank=True,
@@ -182,21 +165,35 @@ class JobOptions(BaseModel):
         return cred
 
     @property
-    def all_credentials(self):
-        credentials = list(self.extra_credentials.all())
-        if self.vault_credential:
-            credentials.insert(0, self.vault_credential)
-        if self.credential:
-            credentials.insert(0, self.credential)
-        return credentials
-
-    @property
     def network_credentials(self):
-        return [cred for cred in self.extra_credentials.all() if cred.credential_type.kind == 'net']
+        return list(self.credentials.filter(credential_type__kind='net'))
 
     @property
     def cloud_credentials(self):
-        return [cred for cred in self.extra_credentials.all() if cred.credential_type.kind == 'cloud']
+        return list(self.credentials.filter(credential_type__kind='cloud'))
+
+    @property
+    def vault_credentials(self):
+        return list(self.credentials.filter(credential_type__kind='vault'))
+
+    @property
+    def credential(self):
+        cred = self.get_deprecated_credential('ssh')
+        if cred is not None:
+            return cred.pk
+
+    @property
+    def vault_credential(self):
+        cred = self.get_deprecated_credential('vault')
+        if cred is not None:
+            return cred.pk
+
+    def get_deprecated_credential(self, kind):
+        for cred in self.credentials.all():
+            if cred.credential_type.kind == kind:
+                return cred
+        else:
+            return None
 
     # TODO: remove when API v1 is removed
     @property
@@ -218,70 +215,73 @@ class JobOptions(BaseModel):
     def passwords_needed_to_start(self):
         '''Return list of password field names needed to start the job.'''
         needed = []
-        if self.credential:
-            needed.extend(self.credential.passwords_needed)
-        if self.vault_credential:
-            needed.extend(self.vault_credential.passwords_needed)
+        # Unsaved credential objects can not require passwords
+        if not self.pk:
+            return needed
+        for cred in self.credentials.all():
+            needed.extend(cred.passwords_needed)
         return needed
 
 
-class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, ResourceMixin):
+class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin):
     '''
     A job template is a reusable job definition for applying a project (with
     playbook) to an inventory source with a given credential.
     '''
+    FIELDS_TO_PRESERVE_AT_COPY = [
+        'labels', 'instance_groups', 'credentials', 'survey_spec'
+    ]
+    FIELDS_TO_DISCARD_AT_COPY = ['vault_credential', 'credential']
     SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name')]
 
     class Meta:
         app_label = 'main'
         ordering = ('name',)
 
-    host_config_key = models.CharField(
+    host_config_key = prevent_search(models.CharField(
         max_length=1024,
         blank=True,
         default='',
-    )
-    ask_diff_mode_on_launch = models.BooleanField(
+    ))
+    ask_diff_mode_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_variables_on_launch = models.BooleanField(
+    ask_limit_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_limit_on_launch = models.BooleanField(
+    ask_tags_on_launch = AskForField(
+        blank=True,
+        default=False,
+        allows_field='job_tags'
+    )
+    ask_skip_tags_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_tags_on_launch = models.BooleanField(
+    ask_job_type_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_skip_tags_on_launch = models.BooleanField(
+    ask_verbosity_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_job_type_on_launch = models.BooleanField(
+    ask_inventory_on_launch = AskForField(
         blank=True,
         default=False,
     )
-    ask_verbosity_on_launch = models.BooleanField(
+    ask_credential_on_launch = AskForField(
         blank=True,
         default=False,
-    )
-    ask_inventory_on_launch = models.BooleanField(
-        blank=True,
-        default=False,
-    )
-    ask_credential_on_launch = models.BooleanField(
-        blank=True,
-        default=False,
+        allows_field='credentials'
     )
     admin_role = ImplicitRoleField(
-        parent_role=['project.organization.admin_role', 'inventory.organization.admin_role']
+        parent_role=['project.organization.job_template_admin_role', 'inventory.organization.job_template_admin_role']
     )
     execute_role = ImplicitRoleField(
-        parent_role=['admin_role'],
+        parent_role=['admin_role', 'project.organization.execute_role', 'inventory.organization.execute_role'],
     )
     read_role = ImplicitRoleField(
         parent_role=['project.organization.auditor_role', 'inventory.organization.auditor_role', 'execute_role', 'admin_role'],
@@ -294,42 +294,25 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
 
     @classmethod
     def _get_unified_job_field_names(cls):
-        return ['name', 'description', 'job_type', 'inventory', 'project',
-                'playbook', 'credential', 'vault_credential',
-                'extra_credentials', 'forks', 'schedule', 'limit', 'verbosity',
-                'job_tags', 'extra_vars', 'launch_type', 'force_handlers',
-                'skip_tags', 'start_at_task', 'become_enabled', 'labels',
-                'survey_passwords', 'allow_simultaneous', 'timeout',
-                'use_fact_cache', 'diff_mode',]
+        return set(f.name for f in JobOptions._meta.fields) | set(
+            ['name', 'description', 'schedule', 'survey_passwords', 'labels', 'credentials']
+        )
 
-    def resource_validation_data(self):
+    @property
+    def validation_errors(self):
         '''
-        Process consistency errors and need-for-launch related fields.
+        Fields needed to start, which cannot be given on launch, invalid state.
         '''
-        resources_needed_to_start = []
         validation_errors = {}
-
-        # Inventory and Credential related checks
-        if self.inventory is None:
-            resources_needed_to_start.append('inventory')
-            if not self.ask_inventory_on_launch:
-                validation_errors['inventory'] = [_("Job Template must provide 'inventory' or allow prompting for it."),]
-        if self.credential is None and self.vault_credential is None:
-            resources_needed_to_start.append('credential')
-            if not self.ask_credential_on_launch:
-                validation_errors['credential'] = [_("Job Template must provide 'credential' or allow prompting for it."),]
-
-        # Job type dependent checks
+        if self.inventory is None and not self.ask_inventory_on_launch:
+            validation_errors['inventory'] = [_("Job Template must provide 'inventory' or allow prompting for it."),]
         if self.project is None:
-            resources_needed_to_start.append('project')
             validation_errors['project'] = [_("Job types 'run' and 'check' must have assigned a project."),]
-
-        return (validation_errors, resources_needed_to_start)
+        return validation_errors
 
     @property
     def resources_needed_to_start(self):
-        validation_errors, resources_needed_to_start = self.resource_validation_data()
-        return resources_needed_to_start
+        return [fd for fd in ['project', 'inventory'] if not getattr(self, '{}_id'.format(fd))]
 
     def create_job(self, **kwargs):
         '''
@@ -359,68 +342,78 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
         # that of job template launch, so prompting_needed should
         # not block a provisioning callback from creating/launching jobs.
         if callback_extra_vars is None:
-            for value in self._ask_for_vars_dict().values():
-                if value:
+            for ask_field_name in set(self.get_ask_mapping().values()):
+                if getattr(self, ask_field_name):
                     prompting_needed = True
+                    break
         return (not prompting_needed and
                 not self.passwords_needed_to_start and
                 not variables_needed)
 
-    def _ask_for_vars_dict(self):
-        return dict(
-            diff_mode=self.ask_diff_mode_on_launch,
-            extra_vars=self.ask_variables_on_launch,
-            limit=self.ask_limit_on_launch,
-            job_tags=self.ask_tags_on_launch,
-            skip_tags=self.ask_skip_tags_on_launch,
-            job_type=self.ask_job_type_on_launch,
-            verbosity=self.ask_verbosity_on_launch,
-            inventory=self.ask_inventory_on_launch,
-            credential=self.ask_credential_on_launch,
-            vault_credential=self.ask_credential_on_launch,
-            extra_credentials=self.ask_credential_on_launch,
-        )
-
     def _accept_or_ignore_job_kwargs(self, **kwargs):
-        # Sort the runtime fields allowed and disallowed by job template
-        ignored_fields = {}
-        prompted_fields = {}
+        exclude_errors = kwargs.pop('_exclude_errors', [])
+        prompted_data = {}
+        rejected_data = {}
+        accepted_vars, rejected_vars, errors_dict = self.accept_or_ignore_variables(
+            kwargs.get('extra_vars', {}),
+            _exclude_errors=exclude_errors,
+            extra_passwords=kwargs.get('survey_passwords', {}))
+        if accepted_vars:
+            prompted_data['extra_vars'] = accepted_vars
+        if rejected_vars:
+            rejected_data['extra_vars'] = rejected_vars
 
-        ask_for_vars_dict = self._ask_for_vars_dict()
+        # Handle all the other fields that follow the simple prompting rule
+        for field_name, ask_field_name in self.get_ask_mapping().items():
+            if field_name not in kwargs or field_name == 'extra_vars' or kwargs[field_name] is None:
+                continue
 
-        for field in ask_for_vars_dict:
-            if field in kwargs:
-                if field == 'extra_vars':
-                    prompted_fields[field] = {}
-                    ignored_fields[field] = {}
-                if ask_for_vars_dict[field]:
-                    prompted_fields[field] = kwargs[field]
+            new_value = kwargs[field_name]
+            old_value = getattr(self, field_name)
+
+            field = self._meta.get_field(field_name)
+            if isinstance(field, models.ManyToManyField):
+                old_value = set(old_value.all())
+                if getattr(self, '_deprecated_credential_launch', False):
+                    # TODO: remove this code branch when support for `extra_credentials` goes away
+                    new_value = set(kwargs[field_name])
                 else:
-                    if field == 'extra_vars' and self.survey_enabled and self.survey_spec:
-                        # Accept vars defined in the survey and no others
-                        survey_vars = [question['variable'] for question in self.survey_spec.get('spec', [])]
-                        extra_vars = parse_yaml_or_json(kwargs[field])
-                        for key in extra_vars:
-                            if key in survey_vars:
-                                prompted_fields[field][key] = extra_vars[key]
-                            else:
-                                ignored_fields[field][key] = extra_vars[key]
-                    else:
-                        ignored_fields[field] = kwargs[field]
+                    new_value = set(kwargs[field_name]) - old_value
+                    if not new_value:
+                        continue
 
-        return prompted_fields, ignored_fields
+            if new_value == old_value:
+                # no-op case: Fields the same as template's value
+                # counted as neither accepted or ignored
+                continue
+            elif getattr(self, ask_field_name):
+                # accepted prompt
+                prompted_data[field_name] = new_value
+            else:
+                # unprompted - template is not configured to accept field on launch
+                rejected_data[field_name] = new_value
+                # Not considered an error for manual launch, to support old
+                # behavior of putting them in ignored_fields and launching anyway
+                if 'prompts' not in exclude_errors:
+                    errors_dict[field_name] = _('Field is not configured to prompt on launch.').format(field_name=field_name)
 
-    def _extra_job_type_errors(self, data):
-        """
-        Used to enforce 2 special cases around scan jobs and prompting
-         - the inventory cannot be changed on a scan job template
-         - scan jobs cannot be switched to run/check type and vice versa
-        """
-        errors = {}
-        if 'job_type' in data and self.ask_job_type_on_launch:
-            if data['job_type'] == PERM_INVENTORY_SCAN and not self.job_type == PERM_INVENTORY_SCAN:
-                errors['job_type'] = _('Cannot override job_type to or from a scan job.')
-        return errors
+        if ('prompts' not in exclude_errors and
+                (not getattr(self, 'ask_credential_on_launch', False)) and
+                self.passwords_needed_to_start):
+            errors_dict['passwords_needed_to_start'] = _(
+                'Saved launch configurations cannot provide passwords needed to start.')
+
+        needed = self.resources_needed_to_start
+        if needed:
+            needed_errors = []
+            for resource in needed:
+                if resource in prompted_data:
+                    continue
+                needed_errors.append(_("Job Template {} is missing or undefined.").format(resource))
+            if needed_errors:
+                errors_dict['resources_needed_to_start'] = needed_errors
+
+        return prompted_data, rejected_data, errors_dict
 
     @property
     def cache_timeout_blocked(self):
@@ -454,6 +447,12 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
             any_notification_templates = set(any_notification_templates + list(base_notification_templates.filter(
                 organization_notification_templates_for_any=self.project.organization)))
         return dict(error=list(error_notification_templates), success=list(success_notification_templates), any=list(any_notification_templates))
+
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return Job.objects.filter(job_template=self)
 
 
 class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskManagerJobMixin):
@@ -528,7 +527,23 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
         return reverse('api:job_detail', kwargs={'pk': self.pk}, request=request)
 
     def get_ui_url(self):
-        return urljoin(settings.TOWER_URL_BASE, "/#/jobs/{}".format(self.pk))
+        return urljoin(settings.TOWER_URL_BASE, "/#/jobs/playbook/{}".format(self.pk))
+
+    @property
+    def ansible_virtualenv_path(self):
+        # the order here enforces precedence (it matters)
+        for virtualenv in (
+            self.job_template.custom_virtualenv if self.job_template else None,
+            self.project.custom_virtualenv,
+            self.project.organization.custom_virtualenv if self.project.organization else None
+        ):
+            if virtualenv:
+                return virtualenv
+        return settings.ANSIBLE_VENV_PATH
+
+    @property
+    def event_class(self):
+        return JobEvent
 
     @property
     def ask_diff_mode_on_launch(self):
@@ -588,19 +603,42 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
         return self.passwords_needed_to_start
 
     def _get_hosts(self, **kwargs):
-        from awx.main.models.inventory import Host
+        Host = JobHostSummary._meta.get_field('host').related_model
         kwargs['job_host_summaries__job__pk'] = self.pk
         return Host.objects.filter(**kwargs)
+
+    def retry_qs(self, status):
+        '''
+        Returns Host queryset that will be used to produce the `limit`
+        field in a retry on a subset of hosts
+        '''
+        kwargs = {}
+        if status == 'all':
+            pass
+        elif status == 'failed':
+            # Special case for parity with Ansible .retry files
+            kwargs['job_host_summaries__failed'] = True
+        elif status in ['ok', 'changed', 'unreachable']:
+            if status == 'unreachable':
+                status_field = 'dark'
+            else:
+                status_field = status
+            kwargs['job_host_summaries__{}__gt'.format(status_field)] = 0
+        else:
+            raise ParseError(_(
+                '{status_value} is not a valid status option.'
+            ).format(status_value=status))
+        return self._get_hosts(**kwargs)
 
     @property
     def task_impact(self):
         # NOTE: We sorta have to assume the host count matches and that forks default to 5
         from awx.main.models.inventory import Host
         if self.launch_type == 'callback':
-            count_hosts = 1
+            count_hosts = 2
         else:
             count_hosts = Host.objects.filter(inventory__jobs__pk=self.pk).count()
-        return min(count_hosts, 5 if self.forks == 0 else self.forks) * 10
+        return min(count_hosts, 5 if self.forks == 0 else self.forks) + 1
 
     @property
     def successful_hosts(self):
@@ -652,7 +690,7 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
         data.update(dict(inventory=self.inventory.name if self.inventory else None,
                          project=self.project.name if self.project else None,
                          playbook=self.playbook,
-                         credential=self.credential.name if self.credential else None,
+                         credential=getattr(self.get_deprecated_credential('ssh'), 'name', None),
                          limit=self.limit,
                          extra_vars=self.display_extra_vars(),
                          hosts=all_hosts))
@@ -689,16 +727,16 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
             return self.global_instance_groups
         return selected_groups
 
-    # Job Credential required
-    @property
-    def can_start(self):
-        if not super(Job, self).can_start:
-            return False
-
-        if not (self.credential) and not (self.vault_credential):
-            return False
-
-        return True
+    def awx_meta_vars(self):
+        r = super(Job, self).awx_meta_vars()
+        if self.project:
+            for name in ('awx', 'tower'):
+                r['{}_project_revision'.format(name)] = self.project.scm_revision
+        if self.job_template:
+            for name in ('awx', 'tower'):
+                r['{}_job_template_id'.format(name)] = self.job_template.pk
+                r['{}_job_template_name'.format(name)] = self.job_template.name
+        return r
 
     '''
     JobNotificationMixin
@@ -711,85 +749,249 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
     def get_notification_friendly_name(self):
         return "Job"
 
-    @property
-    def memcached_fact_key(self):
-        return '{}'.format(self.inventory.id)
-
-    def memcached_fact_host_key(self, host_name):
-        return '{}-{}'.format(self.inventory.id, base64.b64encode(host_name.encode('utf-8')))
-
-    def memcached_fact_modified_key(self, host_name):
-        return '{}-{}-modified'.format(self.inventory.id, base64.b64encode(host_name.encode('utf-8')))
-
-    def _get_inventory_hosts(self, only=['name', 'ansible_facts', 'modified',]):
+    def _get_inventory_hosts(self, only=['name', 'ansible_facts', 'ansible_facts_modified', 'modified',]):
+        if not self.inventory:
+            return []
         return self.inventory.hosts.only(*only)
 
-    def _get_memcache_connection(self):
-        return memcache.Client([settings.CACHES['default']['LOCATION']], debug=0)
-
-    def start_job_fact_cache(self):
-        if not self.inventory:
-            return
-
-        cache = self._get_memcache_connection()
-
-        host_names = []
-
-        for host in self._get_inventory_hosts():
-            host_key = self.memcached_fact_host_key(host.name)
-            modified_key = self.memcached_fact_modified_key(host.name)
-
-            if cache.get(modified_key) is None:
-                if host.ansible_facts_modified:
-                    host_modified = host.ansible_facts_modified.replace(tzinfo=tzutc()).isoformat()
-                else:
-                    host_modified = datetime.datetime.now(tzutc()).isoformat()
-                cache.set(host_key, json.dumps(host.ansible_facts))
-                cache.set(modified_key, host_modified)
-
-            host_names.append(host.name)
-
-        cache.set(self.memcached_fact_key, host_names)
-
-    def finish_job_fact_cache(self):
-        if not self.inventory:
-            return
-
-        cache = self._get_memcache_connection()
-
+    def start_job_fact_cache(self, destination, modification_times, timeout=None):
+        destination = os.path.join(destination, 'facts')
+        os.makedirs(destination, mode=0o700)
         hosts = self._get_inventory_hosts()
+        if timeout is None:
+            timeout = settings.ANSIBLE_FACT_CACHE_TIMEOUT
+        if timeout > 0:
+            # exclude hosts with fact data older than `settings.ANSIBLE_FACT_CACHE_TIMEOUT seconds`
+            timeout = now() - datetime.timedelta(seconds=timeout)
+            hosts = hosts.filter(ansible_facts_modified__gte=timeout)
         for host in hosts:
-            host_key = self.memcached_fact_host_key(host.name)
-            modified_key = self.memcached_fact_modified_key(host.name)
-
-            modified = cache.get(modified_key)
-            if modified is None:
-                cache.delete(host_key)
+            filepath = os.sep.join(map(six.text_type, [destination, host.name]))
+            if not os.path.realpath(filepath).startswith(destination):
+                system_tracking_logger.error('facts for host {} could not be cached'.format(smart_str(host.name)))
                 continue
+            try:
+                with codecs.open(filepath, 'w', encoding='utf-8') as f:
+                    os.chmod(f.name, 0o600)
+                    json.dump(host.ansible_facts, f)
+            except IOError:
+                system_tracking_logger.error('facts for host {} could not be cached'.format(smart_str(host.name)))
+                continue
+            # make note of the time we wrote the file so we can check if it changed later
+            modification_times[filepath] = os.path.getmtime(filepath)
 
-            # Save facts if cache is newer than DB
-            modified = parser.parse(modified, tzinfos=[tzutc()])
-            if not host.ansible_facts_modified or modified > host.ansible_facts_modified:
-                ansible_facts = cache.get(host_key)
-                try:
-                    ansible_facts = json.loads(ansible_facts)
-                except Exception:
-                    ansible_facts = None
-
-                if ansible_facts is None:
-                    cache.delete(host_key)
-                    continue
-                host.ansible_facts = ansible_facts
-                host.ansible_facts_modified = modified
-                if 'insights' in ansible_facts and 'system_id' in ansible_facts['insights']:
-                    host.insights_system_id = ansible_facts['insights']['system_id']
-                host.save()
+    def finish_job_fact_cache(self, destination, modification_times):
+        destination = os.path.join(destination, 'facts')
+        for host in self._get_inventory_hosts():
+            filepath = os.sep.join(map(six.text_type, [destination, host.name]))
+            if not os.path.realpath(filepath).startswith(destination):
+                system_tracking_logger.error('facts for host {} could not be cached'.format(smart_str(host.name)))
+                continue
+            if os.path.exists(filepath):
+                # If the file changed since we wrote it pre-playbook run...
+                modified = os.path.getmtime(filepath)
+                if modified > modification_times.get(filepath, 0):
+                    with codecs.open(filepath, 'r', encoding='utf-8') as f:
+                        try:
+                            ansible_facts = json.load(f)
+                        except ValueError:
+                            continue
+                        host.ansible_facts = ansible_facts
+                        host.ansible_facts_modified = now()
+                        if 'insights' in ansible_facts and 'system_id' in ansible_facts['insights']:
+                            host.insights_system_id = ansible_facts['insights']['system_id']
+                        host.save()
+                        system_tracking_logger.info(
+                            'New fact for inventory {} host {}'.format(
+                                smart_str(host.inventory.name), smart_str(host.name)),
+                            extra=dict(inventory_id=host.inventory.id, host_name=host.name,
+                                       ansible_facts=host.ansible_facts,
+                                       ansible_facts_modified=host.ansible_facts_modified.isoformat(),
+                                       job_id=self.id))
+            else:
+                # if the file goes missing, ansible removed it (likely via clear_facts)
+                host.ansible_facts = {}
+                host.ansible_facts_modified = now()
                 system_tracking_logger.info(
-                    'New fact for inventory {} host {}'.format(
-                        smart_str(host.inventory.name), smart_str(host.name)),
-                    extra=dict(inventory_id=host.inventory.id, host_name=host.name,
-                               ansible_facts=host.ansible_facts,
-                               ansible_facts_modified=host.ansible_facts_modified.isoformat()))
+                    'Facts cleared for inventory {} host {}'.format(
+                        smart_str(host.inventory.name), smart_str(host.name)))
+                host.save()
+
+
+# Add on aliases for the non-related-model fields
+class NullablePromptPsuedoField(object):
+    """
+    Interface for psuedo-property stored in `char_prompts` dict
+    Used in LaunchTimeConfig and submodels
+    """
+    def __init__(self, field_name):
+        self.field_name = field_name
+
+    def __get__(self, instance, type=None):
+        return instance.char_prompts.get(self.field_name, None)
+
+    def __set__(self, instance, value):
+        if value in (None, {}):
+            instance.char_prompts.pop(self.field_name, None)
+        else:
+            instance.char_prompts[self.field_name] = value
+
+
+class LaunchTimeConfig(BaseModel):
+    '''
+    Common model for all objects that save details of a saved launch config
+    WFJT / WJ nodes, schedules, and job launch configs (not all implemented yet)
+    '''
+    class Meta:
+        abstract = True
+
+    # Prompting-related fields that have to be handled as special cases
+    credentials = models.ManyToManyField(
+        'Credential',
+        related_name='%(class)ss'
+    )
+    inventory = models.ForeignKey(
+        'Inventory',
+        related_name='%(class)ss',
+        blank=True,
+        null=True,
+        default=None,
+        on_delete=models.SET_NULL,
+    )
+    extra_data = JSONField(
+        blank=True,
+        default={}
+    )
+    survey_passwords = prevent_search(JSONField(
+        blank=True,
+        default={},
+        editable=False,
+    ))
+    # All standard fields are stored in this dictionary field
+    # This is a solution to the nullable CharField problem, specific to prompting
+    char_prompts = JSONField(
+        blank=True,
+        default={}
+    )
+
+    def prompts_dict(self, display=False):
+        data = {}
+        for prompt_name in JobTemplate.get_ask_mapping().keys():
+            try:
+                field = self._meta.get_field(prompt_name)
+            except FieldDoesNotExist:
+                field = None
+            if isinstance(field, models.ManyToManyField):
+                if not self.pk:
+                    continue  # unsaved object can't have related many-to-many
+                prompt_val = set(getattr(self, prompt_name).all())
+                if len(prompt_val) > 0:
+                    data[prompt_name] = prompt_val
+            elif prompt_name == 'extra_vars':
+                if self.extra_data:
+                    if display:
+                        data[prompt_name] = self.display_extra_data()
+                    else:
+                        data[prompt_name] = self.extra_data
+                if self.survey_passwords and not display:
+                    data['survey_passwords'] = self.survey_passwords
+            else:
+                prompt_val = getattr(self, prompt_name)
+                if prompt_val is not None:
+                    data[prompt_name] = prompt_val
+        return data
+
+    def display_extra_data(self):
+        '''
+        Hides fields marked as passwords in survey.
+        '''
+        if self.survey_passwords:
+            extra_data = parse_yaml_or_json(self.extra_data).copy()
+            for key, value in self.survey_passwords.items():
+                if key in extra_data:
+                    extra_data[key] = value
+            return extra_data
+        else:
+            return self.extra_data
+
+    @property
+    def _credential(self):
+        '''
+        Only used for workflow nodes to support backward compatibility.
+        '''
+        try:
+            return [cred for cred in self.credentials.all() if cred.credential_type.kind == 'ssh'][0]
+        except IndexError:
+            return None
+
+    @property
+    def credential(self):
+        '''
+        Returns an integer so it can be used as IntegerField in serializer
+        '''
+        cred = self._credential
+        if cred is not None:
+            return cred.pk
+        else:
+            return None
+
+
+for field_name in JobTemplate.get_ask_mapping().keys():
+    try:
+        LaunchTimeConfig._meta.get_field(field_name)
+    except FieldDoesNotExist:
+        setattr(LaunchTimeConfig, field_name, NullablePromptPsuedoField(field_name))
+
+
+class JobLaunchConfig(LaunchTimeConfig):
+    '''
+    Historical record of user launch-time overrides for a job
+    Not exposed in the API
+    Used for relaunch, scheduling, etc.
+    '''
+    class Meta:
+        app_label = 'main'
+
+    job = models.OneToOneField(
+        'UnifiedJob',
+        related_name='launch_config',
+        on_delete=models.CASCADE,
+        editable=False,
+    )
+
+    def has_user_prompts(self, template):
+        '''
+        Returns True if any fields exist in the launch config that are
+        not permissions exclusions
+        (has to exist because of callback relaunch exception)
+        '''
+        return self._has_user_prompts(template, only_unprompted=False)
+
+    def has_unprompted(self, template):
+        '''
+        returns True if the template has set ask_ fields to False after
+        launching with those prompts
+        '''
+        return self._has_user_prompts(template, only_unprompted=True)
+
+    def _has_user_prompts(self, template, only_unprompted=True):
+        prompts = self.prompts_dict()
+        ask_mapping = template.get_ask_mapping()
+        if template.survey_enabled and (not template.ask_variables_on_launch):
+            ask_mapping.pop('extra_vars')
+            provided_vars = set(prompts.get('extra_vars', {}).keys())
+            survey_vars = set(
+                element.get('variable') for element in
+                template.survey_spec.get('spec', {}) if 'variable' in element
+            )
+            if (provided_vars and not only_unprompted) or (provided_vars - survey_vars):
+                return True
+        for field_name, ask_field_name in ask_mapping.items():
+            if field_name in prompts and not (getattr(template, ask_field_name) and only_unprompted):
+                if field_name == 'limit' and self.job and self.job.launch_type == 'callback':
+                    continue  # exception for relaunching callbacks
+                return True
+        else:
+            return False
 
 
 class JobHostSummary(CreatedModifiedModel):
@@ -831,7 +1033,8 @@ class JobHostSummary(CreatedModifiedModel):
     failed = models.BooleanField(default=False, editable=False)
 
     def __unicode__(self):
-        hostname = self.host.name if self.host else 'N/A'
+        host = getattr_dne(self, 'host')
+        hostname = host.name if host else 'N/A'
         return '%s changed=%d dark=%d failures=%d ok=%d processed=%d skipped=%s' % \
             (hostname, self.changed, self.dark, self.failures, self.ok,
              self.processed, self.skipped)
@@ -863,477 +1066,6 @@ class JobHostSummary(CreatedModifiedModel):
         if update_fields:
             self.host.save(update_fields=update_fields)
         #self.host.update_computed_fields()
-
-
-class JobEvent(CreatedModifiedModel):
-    '''
-    An event/message logged from the callback when running a job.
-    '''
-
-    # Playbook events will be structured to form the following hierarchy:
-    # - playbook_on_start (once for each playbook file)
-    #   - playbook_on_vars_prompt (for each play, but before play starts, we
-    #     currently don't handle responding to these prompts)
-    #   - playbook_on_play_start (once for each play)
-    #     - playbook_on_import_for_host (not logged, not used for v2)
-    #     - playbook_on_not_import_for_host (not logged, not used for v2)
-    #     - playbook_on_no_hosts_matched
-    #     - playbook_on_no_hosts_remaining
-    #     - playbook_on_include (only v2 - only used for handlers?)
-    #     - playbook_on_setup (not used for v2)
-    #       - runner_on*
-    #     - playbook_on_task_start (once for each task within a play)
-    #       - runner_on_failed
-    #       - runner_on_ok
-    #       - runner_on_error (not used for v2)
-    #       - runner_on_skipped
-    #       - runner_on_unreachable
-    #       - runner_on_no_hosts (not used for v2)
-    #       - runner_on_async_poll (not used for v2)
-    #       - runner_on_async_ok (not used for v2)
-    #       - runner_on_async_failed (not used for v2)
-    #       - runner_on_file_diff (v2 event is v2_on_file_diff)
-    #       - runner_item_on_ok (v2 only)
-    #       - runner_item_on_failed (v2 only)
-    #       - runner_item_on_skipped (v2 only)
-    #       - runner_retry (v2 only)
-    #     - playbook_on_notify (once for each notification from the play, not used for v2)
-    #   - playbook_on_stats
-
-    EVENT_TYPES = [
-        # (level, event, verbose name, failed)
-        (3, 'runner_on_failed', _('Host Failed'), True),
-        (3, 'runner_on_ok', _('Host OK'), False),
-        (3, 'runner_on_error', _('Host Failure'), True),
-        (3, 'runner_on_skipped', _('Host Skipped'), False),
-        (3, 'runner_on_unreachable', _('Host Unreachable'), True),
-        (3, 'runner_on_no_hosts', _('No Hosts Remaining'), False),
-        (3, 'runner_on_async_poll', _('Host Polling'), False),
-        (3, 'runner_on_async_ok', _('Host Async OK'), False),
-        (3, 'runner_on_async_failed', _('Host Async Failure'), True),
-        (3, 'runner_item_on_ok', _('Item OK'), False),
-        (3, 'runner_item_on_failed', _('Item Failed'), True),
-        (3, 'runner_item_on_skipped', _('Item Skipped'), False),
-        (3, 'runner_retry', _('Host Retry'), False),
-        # Tower does not yet support --diff mode.
-        (3, 'runner_on_file_diff', _('File Difference'), False),
-        (0, 'playbook_on_start', _('Playbook Started'), False),
-        (2, 'playbook_on_notify', _('Running Handlers'), False),
-        (2, 'playbook_on_include', _('Including File'), False),
-        (2, 'playbook_on_no_hosts_matched', _('No Hosts Matched'), False),
-        (2, 'playbook_on_no_hosts_remaining', _('No Hosts Remaining'), False),
-        (2, 'playbook_on_task_start', _('Task Started'), False),
-        # Tower does not yet support vars_prompt (and will probably hang :)
-        (1, 'playbook_on_vars_prompt', _('Variables Prompted'), False),
-        (2, 'playbook_on_setup', _('Gathering Facts'), False),
-        (2, 'playbook_on_import_for_host', _('internal: on Import for Host'), False),
-        (2, 'playbook_on_not_import_for_host', _('internal: on Not Import for Host'), False),
-        (1, 'playbook_on_play_start', _('Play Started'), False),
-        (1, 'playbook_on_stats', _('Playbook Complete'), False),
-
-        # Additional event types for captured stdout not directly related to
-        # playbook or runner events.
-        (0, 'debug', _('Debug'), False),
-        (0, 'verbose', _('Verbose'), False),
-        (0, 'deprecated', _('Deprecated'), False),
-        (0, 'warning', _('Warning'), False),
-        (0, 'system_warning', _('System Warning'), False),
-        (0, 'error', _('Error'), True),
-    ]
-    FAILED_EVENTS = [x[1] for x in EVENT_TYPES if x[3]]
-    EVENT_CHOICES = [(x[1], x[2]) for x in EVENT_TYPES]
-    LEVEL_FOR_EVENT = dict([(x[1], x[0]) for x in EVENT_TYPES])
-
-    class Meta:
-        app_label = 'main'
-        ordering = ('pk',)
-        index_together = [
-            ('job', 'event'),
-            ('job', 'uuid'),
-            ('job', 'start_line'),
-            ('job', 'end_line'),
-            ('job', 'parent_uuid'),
-        ]
-
-    job = models.ForeignKey(
-        'Job',
-        related_name='job_events',
-        on_delete=models.CASCADE,
-        editable=False,
-    )
-    event = models.CharField(
-        max_length=100,
-        choices=EVENT_CHOICES,
-    )
-    event_data = JSONField(
-        blank=True,
-        default={},
-    )
-    failed = models.BooleanField(
-        default=False,
-        editable=False,
-    )
-    changed = models.BooleanField(
-        default=False,
-        editable=False,
-    )
-    uuid = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    host = models.ForeignKey(
-        'Host',
-        related_name='job_events_as_primary_host',
-        null=True,
-        default=None,
-        on_delete=models.SET_NULL,
-        editable=False,
-    )
-    host_name = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    hosts = models.ManyToManyField(
-        'Host',
-        related_name='job_events',
-        editable=False,
-    )
-    playbook = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    play = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    role = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    task = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    parent = models.ForeignKey(
-        'self',
-        related_name='children',
-        null=True,
-        default=None,
-        on_delete=models.SET_NULL,
-        editable=False,
-    )
-    parent_uuid = models.CharField(
-        max_length=1024,
-        default='',
-        editable=False,
-    )
-    counter = models.PositiveIntegerField(
-        default=0,
-        editable=False,
-    )
-    stdout = models.TextField(
-        default='',
-        editable=False,
-    )
-    verbosity = models.PositiveIntegerField(
-        default=0,
-        editable=False,
-    )
-    start_line = models.PositiveIntegerField(
-        default=0,
-        editable=False,
-    )
-    end_line = models.PositiveIntegerField(
-        default=0,
-        editable=False,
-    )
-
-    def get_absolute_url(self, request=None):
-        return reverse('api:job_event_detail', kwargs={'pk': self.pk}, request=request)
-
-    def __unicode__(self):
-        return u'%s @ %s' % (self.get_event_display2(), self.created.isoformat())
-
-    @property
-    def event_level(self):
-        return self.LEVEL_FOR_EVENT.get(self.event, 0)
-
-    def get_event_display2(self):
-        msg = self.get_event_display()
-        if self.event == 'playbook_on_play_start':
-            if self.play:
-                msg = "%s (%s)" % (msg, self.play)
-        elif self.event == 'playbook_on_task_start':
-            if self.task:
-                if self.event_data.get('is_conditional', False):
-                    msg = 'Handler Notified'
-                if self.role:
-                    msg = '%s (%s | %s)' % (msg, self.role, self.task)
-                else:
-                    msg = "%s (%s)" % (msg, self.task)
-
-        # Change display for runner events trigged by async polling.  Some of
-        # these events may not show in most cases, due to filterting them out
-        # of the job event queryset returned to the user.
-        res = self.event_data.get('res', {})
-        # Fix for existing records before we had added the workaround on save
-        # to change async_ok to async_failed.
-        if self.event == 'runner_on_async_ok':
-            try:
-                if res.get('failed', False) or res.get('rc', 0) != 0:
-                    msg = 'Host Async Failed'
-            except (AttributeError, TypeError):
-                pass
-        # Runner events with ansible_job_id are part of async starting/polling.
-        if self.event in ('runner_on_ok', 'runner_on_failed'):
-            try:
-                module_name = res['invocation']['module_name']
-                job_id = res['ansible_job_id']
-            except (TypeError, KeyError, AttributeError):
-                module_name = None
-                job_id = None
-            if module_name and job_id:
-                if module_name == 'async_status':
-                    msg = 'Host Async Checking'
-                else:
-                    msg = 'Host Async Started'
-        # Handle both 1.2 on_failed and 1.3+ on_async_failed events when an
-        # async task times out.
-        if self.event in ('runner_on_failed', 'runner_on_async_failed'):
-            try:
-                if res['msg'] == 'timed out':
-                    msg = 'Host Async Timeout'
-            except (TypeError, KeyError, AttributeError):
-                pass
-        return msg
-
-    def _update_from_event_data(self):
-        # Update job event model fields from event data.
-        updated_fields = set()
-        job = self.job
-        verbosity = job.verbosity
-        event_data = self.event_data
-        res = event_data.get('res', None)
-        if self.event in self.FAILED_EVENTS and not event_data.get('ignore_errors', False):
-            self.failed = True
-            updated_fields.add('failed')
-        if isinstance(res, dict):
-            if res.get('changed', False):
-                self.changed = True
-                updated_fields.add('changed')
-            # If we're not in verbose mode, wipe out any module arguments.
-            invocation = res.get('invocation', None)
-            if isinstance(invocation, dict) and verbosity == 0 and 'module_args' in invocation:
-                event_data['res']['invocation']['module_args'] = ''
-                self.event_data = event_data
-                updated_fields.add('event_data')
-        if self.event == 'playbook_on_stats':
-            try:
-                failures_dict = event_data.get('failures', {})
-                dark_dict = event_data.get('dark', {})
-                self.failed = bool(sum(failures_dict.values()) +
-                                   sum(dark_dict.values()))
-                updated_fields.add('failed')
-                changed_dict = event_data.get('changed', {})
-                self.changed = bool(sum(changed_dict.values()))
-                updated_fields.add('changed')
-            except (AttributeError, TypeError):
-                pass
-        for field in ('playbook', 'play', 'task', 'role', 'host'):
-            value = force_text(event_data.get(field, '')).strip()
-            if field == 'host':
-                field = 'host_name'
-            if value != getattr(self, field):
-                setattr(self, field, value)
-                updated_fields.add(field)
-        return updated_fields
-
-    def _update_parents_failed_and_changed(self):
-        # Update parent events to reflect failed, changed
-        runner_events = JobEvent.objects.filter(job=self.job,
-                                                event__startswith='runner_on')
-        changed_events = runner_events.filter(changed=True)
-        failed_events = runner_events.filter(failed=True)
-        JobEvent.objects.filter(uuid__in=changed_events.values_list('parent_uuid', flat=True)).update(changed=True)
-        JobEvent.objects.filter(uuid__in=failed_events.values_list('parent_uuid', flat=True)).update(failed=True)
-
-    def _update_hosts(self, extra_host_pks=None):
-        # Update job event hosts m2m from host_name, propagate to parent events.
-        extra_host_pks = set(extra_host_pks or [])
-        hostnames = set()
-        if self.host_name:
-            hostnames.add(self.host_name)
-        if self.event == 'playbook_on_stats':
-            try:
-                for v in self.event_data.values():
-                    hostnames.update(v.keys())
-            except AttributeError: # In case event_data or v isn't a dict.
-                pass
-        qs = self.job.inventory.hosts.all()
-        qs = qs.filter(Q(name__in=hostnames) | Q(pk__in=extra_host_pks))
-        qs = qs.exclude(job_events__pk=self.id).only('id')
-        for host in qs:
-            self.hosts.add(host)
-        if self.parent_uuid:
-            parent = JobEvent.objects.filter(uuid=self.parent_uuid)
-            if parent.exists():
-                parent = parent[0]
-                parent._update_hosts(qs.values_list('id', flat=True))
-
-    def _hostnames(self):
-        hostnames = set()
-        try:
-            for stat in ('changed', 'dark', 'failures', 'ok', 'processed', 'skipped'):
-                hostnames.update(self.event_data.get(stat, {}).keys())
-        except AttributeError:  # In case event_data or v isn't a dict.
-            pass
-        return hostnames
-
-    def _update_host_summary_from_stats(self, hostnames):
-        with ignore_inventory_computed_fields():
-            qs = self.job.inventory.hosts.filter(name__in=hostnames)
-            job = self.job
-            for host in hostnames:
-                host_stats = {}
-                for stat in ('changed', 'dark', 'failures', 'ok', 'processed', 'skipped'):
-                    try:
-                        host_stats[stat] = self.event_data.get(stat, {}).get(host, 0)
-                    except AttributeError:  # in case event_data[stat] isn't a dict.
-                        pass
-                if qs.filter(name=host).exists():
-                    host_actual = qs.get(name=host)
-                    host_summary, created = job.job_host_summaries.get_or_create(host=host_actual, host_name=host_actual.name, defaults=host_stats)
-                else:
-                    host_summary, created = job.job_host_summaries.get_or_create(host_name=host, defaults=host_stats)
-
-                if not created:
-                    update_fields = []
-                    for stat, value in host_stats.items():
-                        if getattr(host_summary, stat) != value:
-                            setattr(host_summary, stat, value)
-                            update_fields.append(stat)
-                    if update_fields:
-                        host_summary.save(update_fields=update_fields)
-
-    def save(self, *args, **kwargs):
-        # If update_fields has been specified, add our field names to it,
-        # if it hasn't been specified, then we're just doing a normal save.
-        update_fields = kwargs.get('update_fields', [])
-        # Update model fields and related objects unless we're only updating
-        # failed/changed flags triggered from a child event.
-        from_parent_update = kwargs.pop('from_parent_update', False)
-        if not from_parent_update:
-            # Update model fields from event data.
-            updated_fields = self._update_from_event_data()
-            for field in updated_fields:
-                if field not in update_fields:
-                    update_fields.append(field)
-            # Update host related field from host_name.
-            if not self.host_id and self.host_name:
-                host_qs = self.job.inventory.hosts.filter(name=self.host_name)
-                host_id = host_qs.only('id').values_list('id', flat=True).first()
-                if host_id != self.host_id:
-                    self.host_id = host_id
-                    if 'host_id' not in update_fields:
-                        update_fields.append('host_id')
-        super(JobEvent, self).save(*args, **kwargs)
-        # Update related objects after this event is saved.
-        if not from_parent_update:
-            if getattr(settings, 'CAPTURE_JOB_EVENT_HOSTS', False):
-                self._update_hosts()
-            if self.event == 'playbook_on_stats':
-                self._update_parents_failed_and_changed()
-
-                hostnames = self._hostnames()
-                self._update_host_summary_from_stats(hostnames)
-                self.job.inventory.update_computed_fields()
-
-                emit_channel_notification('jobs-summary', dict(group_name='jobs', unified_job_id=self.job.id))
-
-    @classmethod
-    def create_from_data(self, **kwargs):
-        # Must have a job_id specified.
-        if not kwargs.get('job_id', None):
-            return
-
-        # Convert the datetime for the job event's creation appropriately,
-        # and include a time zone for it.
-        #
-        # In the event of any issue, throw it out, and Django will just save
-        # the current time.
-        try:
-            if not isinstance(kwargs['created'], datetime.datetime):
-                kwargs['created'] = parse_datetime(kwargs['created'])
-            if not kwargs['created'].tzinfo:
-                kwargs['created'] = kwargs['created'].replace(tzinfo=utc)
-        except (KeyError, ValueError):
-            kwargs.pop('created', None)
-
-        # Sanity check: Don't honor keys that we don't recognize.
-        valid_keys = {'job_id', 'event', 'event_data', 'playbook', 'play',
-                      'role', 'task', 'created', 'counter', 'uuid', 'stdout',
-                      'parent_uuid', 'start_line', 'end_line', 'verbosity'}
-        for key in kwargs.keys():
-            if key not in valid_keys:
-                kwargs.pop(key)
-
-        event_data = kwargs.get('event_data', None)
-        artifact_dict = None
-        if event_data:
-            artifact_dict = event_data.pop('artifact_data', None)
-
-        job_event = JobEvent.objects.create(**kwargs)
-
-        analytics_logger.info('Job event data saved.', extra=dict(python_objects=dict(job_event=job_event)))
-
-        # Save artifact data to parent job (if provided).
-        if artifact_dict:
-            if event_data and isinstance(event_data, dict):
-                # Note: Core has not added support for marking artifacts as
-                # sensitive yet. Going forward, core will not use
-                # _ansible_no_log to denote sensitive set_stats calls.
-                # Instead, they plan to add a flag outside of the traditional
-                # no_log mechanism. no_log will not work for this feature,
-                # in core, because sensitive data is scrubbed before sending
-                # data to the callback. The playbook_on_stats is the callback
-                # in which the set_stats data is used.
-
-                # Again, the sensitive artifact feature has not yet landed in
-                # core. The below is how we mark artifacts payload as
-                # senstive
-                # artifact_dict['_ansible_no_log'] = True
-                #
-                parent_job = Job.objects.filter(pk=kwargs['job_id']).first()
-                if parent_job and parent_job.artifacts != artifact_dict:
-                    parent_job.artifacts = artifact_dict
-                    parent_job.save(update_fields=['artifacts'])
-
-        return job_event
-
-    @classmethod
-    def get_startevent_queryset(cls, parent_task, starting_events, ordering=None):
-        '''
-        We need to pull information about each start event.
-
-        This is super tricky, because this table has a one-to-many
-        relationship with itself (parent-child), and we're getting
-        information for an arbitrary number of children. This means we
-        need stats on grandchildren, sorted by child.
-        '''
-        qs = (JobEvent.objects.filter(parent__parent=parent_task,
-                                      parent__event__in=starting_events)
-                              .values('parent__id', 'event', 'changed')
-                              .annotate(num=Count('event'))
-                              .order_by('parent__id'))
-        if ordering is not None:
-            qs = qs.order_by(ordering)
-        return qs
 
 
 class SystemJobOptions(BaseModel):
@@ -1392,6 +1124,50 @@ class SystemJobTemplate(UnifiedJobTemplate, SystemJobOptions):
                     success=list(success_notification_templates),
                     any=list(any_notification_templates))
 
+    def _accept_or_ignore_job_kwargs(self, _exclude_errors=None, **kwargs):
+        extra_data = kwargs.pop('extra_vars', {})
+        prompted_data, rejected_data, errors = super(SystemJobTemplate, self)._accept_or_ignore_job_kwargs(**kwargs)
+        prompted_vars, rejected_vars, errors = self.accept_or_ignore_variables(extra_data, errors, _exclude_errors=_exclude_errors)
+        if prompted_vars:
+            prompted_data['extra_vars'] = prompted_vars
+        if rejected_vars:
+            rejected_data['extra_vars'] = rejected_vars
+        return (prompted_data, rejected_data, errors)
+
+    def _accept_or_ignore_variables(self, data, errors, _exclude_errors=()):
+        '''
+        Unlike other templates, like project updates and inventory sources,
+        system job templates can accept a limited number of fields
+        used as options for the management commands.
+        '''
+        rejected = {}
+        allowed_vars = set(['days', 'older_than', 'granularity'])
+        given_vars = set(data.keys())
+        unallowed_vars = given_vars - (allowed_vars & given_vars)
+        errors_list = []
+        if unallowed_vars:
+            errors_list.append(_('Variables {list_of_keys} are not allowed for system jobs.').format(
+                list_of_keys=', '.join(unallowed_vars)))
+            for key in unallowed_vars:
+                rejected[key] = data.pop(key)
+
+        if 'days' in data:
+            try:
+                if type(data['days']) is bool:
+                    raise ValueError
+                if float(data['days']) != int(data['days']):
+                    raise ValueError
+                days = int(data['days'])
+                if days < 0:
+                    raise ValueError
+            except ValueError:
+                errors_list.append(_("days must be a positive integer."))
+                rejected['days'] = data.pop('days')
+
+        if errors_list:
+            errors['extra_vars'] = errors_list
+        return (data, rejected, errors)
+
 
 class SystemJob(UnifiedJob, SystemJobOptions, JobNotificationMixin):
 
@@ -1431,11 +1207,15 @@ class SystemJob(UnifiedJob, SystemJobOptions, JobNotificationMixin):
         return reverse('api:system_job_detail', kwargs={'pk': self.pk}, request=request)
 
     def get_ui_url(self):
-        return urljoin(settings.TOWER_URL_BASE, "/#/management_jobs/{}".format(self.pk))
+        return urljoin(settings.TOWER_URL_BASE, "/#/jobs/system/{}".format(self.pk))
+
+    @property
+    def event_class(self):
+        return SystemJobEvent
 
     @property
     def task_impact(self):
-        return 150
+        return 5
 
     @property
     def preferred_instance_groups(self):

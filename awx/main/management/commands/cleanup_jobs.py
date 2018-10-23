@@ -4,10 +4,11 @@
 # Python
 import datetime
 import logging
-from optparse import make_option
+
+import six
 
 # Django
-from django.core.management.base import NoArgsCommand, CommandError
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils.timezone import now
 
@@ -25,41 +26,40 @@ from awx.main.signals import ( # noqa
 from django.db.models.signals import post_save, post_delete, m2m_changed # noqa
 
 
-class Command(NoArgsCommand):
+class Command(BaseCommand):
     '''
     Management command to cleanup old jobs and project updates.
     '''
 
     help = 'Remove old jobs, project and inventory updates from the database.'
 
-    option_list = NoArgsCommand.option_list + (
-        make_option('--days', dest='days', type='int', default=90, metavar='N',
-                    help='Remove jobs/updates executed more than N days ago. Defaults to 90.'),
-        make_option('--dry-run', dest='dry_run', action='store_true',
-                    default=False, help='Dry run mode (show items that would '
-                    'be removed)'),
-        make_option('--jobs', dest='only_jobs', action='store_true',
-                    default=False,
-                    help='Remove jobs'),
-        make_option('--ad-hoc-commands', dest='only_ad_hoc_commands',
-                    action='store_true', default=False,
-                    help='Remove ad hoc commands'),
-        make_option('--project-updates', dest='only_project_updates',
-                    action='store_true', default=False,
-                    help='Remove project updates'),
-        make_option('--inventory-updates', dest='only_inventory_updates',
-                    action='store_true', default=False,
-                    help='Remove inventory updates'),
-        make_option('--management-jobs', default=False,
-                    action='store_true', dest='only_management_jobs',
-                    help='Remove management jobs'),
-        make_option('--notifications', dest='only_notifications',
-                    action='store_true', default=False,
-                    help='Remove notifications'),
-        make_option('--workflow-jobs', default=False,
-                    action='store_true', dest='only_workflow_jobs',
-                    help='Remove workflow jobs')
-    )
+    def add_arguments(self, parser):
+        parser.add_argument('--days', dest='days', type=int, default=90, metavar='N',
+                            help='Remove jobs/updates executed more than N days ago. Defaults to 90.')
+        parser.add_argument('--dry-run', dest='dry_run', action='store_true',
+                            default=False, help='Dry run mode (show items that would '
+                            'be removed)')
+        parser.add_argument('--jobs', dest='only_jobs', action='store_true',
+                            default=False,
+                            help='Remove jobs')
+        parser.add_argument('--ad-hoc-commands', dest='only_ad_hoc_commands',
+                            action='store_true', default=False,
+                            help='Remove ad hoc commands')
+        parser.add_argument('--project-updates', dest='only_project_updates',
+                            action='store_true', default=False,
+                            help='Remove project updates')
+        parser.add_argument('--inventory-updates', dest='only_inventory_updates',
+                            action='store_true', default=False,
+                            help='Remove inventory updates')
+        parser.add_argument('--management-jobs', default=False,
+                            action='store_true', dest='only_management_jobs',
+                            help='Remove management jobs')
+        parser.add_argument('--notifications', dest='only_notifications',
+                            action='store_true', default=False,
+                            help='Remove notifications')
+        parser.add_argument('--workflow-jobs', default=False,
+                            action='store_true', dest='only_workflow_jobs',
+                            help='Remove workflow jobs')
 
     def cleanup_jobs(self):
         #jobs_qs = Job.objects.exclude(status__in=('pending', 'running'))
@@ -68,7 +68,7 @@ class Command(NoArgsCommand):
         jobs = Job.objects.filter(created__lt=self.cutoff)
         for job in jobs.iterator():
             job_display = '"%s" (%d host summaries, %d events)' % \
-                          (unicode(job),
+                          (six.text_type(job),
                            job.job_host_summaries.count(), job.job_events.count())
             if job.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
@@ -89,7 +89,7 @@ class Command(NoArgsCommand):
         ad_hoc_commands = AdHocCommand.objects.filter(created__lt=self.cutoff)
         for ad_hoc_command in ad_hoc_commands.iterator():
             ad_hoc_command_display = '"%s" (%d events)' % \
-                (unicode(ad_hoc_command),
+                (six.text_type(ad_hoc_command),
                  ad_hoc_command.ad_hoc_command_events.count())
             if ad_hoc_command.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
@@ -109,7 +109,7 @@ class Command(NoArgsCommand):
         skipped, deleted = 0, 0
         project_updates = ProjectUpdate.objects.filter(created__lt=self.cutoff)
         for pu in project_updates.iterator():
-            pu_display = '"%s" (type %s)' % (unicode(pu), unicode(pu.launch_type))
+            pu_display = '"%s" (type %s)' % (six.text_type(pu), six.text_type(pu.launch_type))
             if pu.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
                 self.logger.debug('%s %s project update %s', action_text, pu.status, pu_display)
@@ -132,7 +132,7 @@ class Command(NoArgsCommand):
         skipped, deleted = 0, 0
         inventory_updates = InventoryUpdate.objects.filter(created__lt=self.cutoff)
         for iu in inventory_updates.iterator():
-            iu_display = '"%s" (source %s)' % (unicode(iu), unicode(iu.source))
+            iu_display = '"%s" (source %s)' % (six.text_type(iu), six.text_type(iu.source))
             if iu.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
                 self.logger.debug('%s %s inventory update %s', action_text, iu.status, iu_display)
@@ -155,7 +155,7 @@ class Command(NoArgsCommand):
         skipped, deleted = 0, 0
         system_jobs = SystemJob.objects.filter(created__lt=self.cutoff)
         for sj in system_jobs.iterator():
-            sj_display = '"%s" (type %s)' % (unicode(sj), unicode(sj.job_type))
+            sj_display = '"%s" (type %s)' % (six.text_type(sj), six.text_type(sj.job_type))
             if sj.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
                 self.logger.debug('%s %s system_job %s', action_text, sj.status, sj_display)
@@ -185,7 +185,7 @@ class Command(NoArgsCommand):
         workflow_jobs = WorkflowJob.objects.filter(created__lt=self.cutoff)
         for workflow_job in workflow_jobs.iterator():
             workflow_job_display = '"{}" ({} nodes)'.format(
-                unicode(workflow_job),
+                six.text_type(workflow_job),
                 workflow_job.workflow_nodes.count())
             if workflow_job.status in ('pending', 'waiting', 'running'):
                 action_text = 'would skip' if self.dry_run else 'skipping'
@@ -206,7 +206,7 @@ class Command(NoArgsCommand):
         notifications = Notification.objects.filter(created__lt=self.cutoff)
         for notification in notifications.iterator():
             notification_display = '"{}" (started {}, {} type, {} sent)'.format(
-                unicode(notification), unicode(notification.created),
+                six.text_type(notification), six.text_type(notification.created),
                 notification.notification_type, notification.notifications_sent)
             if notification.status in ('pending',):
                 action_text = 'would skip' if self.dry_run else 'skipping'
@@ -223,7 +223,7 @@ class Command(NoArgsCommand):
         return skipped, deleted
 
     @transaction.atomic
-    def handle_noargs(self, **options):
+    def handle(self, *args, **options):
         self.verbosity = int(options.get('verbosity', 1))
         self.init_logging()
         self.days = int(options.get('days', 90))
@@ -248,4 +248,3 @@ class Command(NoArgsCommand):
                         self.logger.log(99, '%s: %d would be deleted, %d would be skipped.', m.replace('_', ' '), deleted, skipped)
                     else:
                         self.logger.log(99, '%s: %d deleted, %d skipped.', m.replace('_', ' '), deleted, skipped)
-

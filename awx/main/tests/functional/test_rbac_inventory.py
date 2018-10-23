@@ -4,7 +4,6 @@ from awx.main.models import (
     Host,
     CustomInventoryScript,
     Schedule,
-    AdHocCommand
 )
 from awx.main.access import (
     InventoryAccess,
@@ -13,16 +12,7 @@ from awx.main.access import (
     InventoryUpdateAccess,
     CustomInventoryScriptAccess,
     ScheduleAccess,
-    StateConflict
 )
-
-
-@pytest.mark.django_db
-def test_running_job_protection(inventory, admin_user):
-    AdHocCommand.objects.create(inventory=inventory, status='running')
-    access = InventoryAccess(admin_user)
-    with pytest.raises(StateConflict):
-        access.can_delete(inventory)
 
 
 @pytest.mark.django_db
@@ -42,19 +32,22 @@ def test_custom_inv_script_access(organization, user):
     assert ou in custom_inv.admin_role
 
 
-@pytest.mark.django_db
-def test_modify_inv_script_foreign_org_admin(org_admin, organization, organization_factory, project):
-    custom_inv = CustomInventoryScript.objects.create(name='test', script='test', description='test',
-                                                      organization=organization)
+@pytest.fixture
+def custom_inv(organization):
+    return CustomInventoryScript.objects.create(
+        name='test', script='test', description='test', organization=organization)
 
+
+@pytest.mark.django_db
+def test_modify_inv_script_foreign_org_admin(
+        org_admin, organization, organization_factory, project, custom_inv):
     other_org = organization_factory('not-my-org').organization
     access = CustomInventoryScriptAccess(org_admin)
     assert not access.can_change(custom_inv, {'organization': other_org.pk, 'name': 'new-project'})
 
 
 @pytest.mark.django_db
-def test_org_member_inventory_script_permissions(org_member, organization):
-    custom_inv = CustomInventoryScript.objects.create(name='test', script='test', organization=organization)
+def test_org_member_inventory_script_permissions(org_member, organization, custom_inv):
     access = CustomInventoryScriptAccess(org_member)
     assert access.can_read(custom_inv)
     assert not access.can_delete(custom_inv)
@@ -62,10 +55,25 @@ def test_org_member_inventory_script_permissions(org_member, organization):
 
 
 @pytest.mark.django_db
-def test_access_admin(organization, inventory, user):
+def test_copy_only_admin(org_member, organization, custom_inv):
+    custom_inv.admin_role.members.add(org_member)
+    access = CustomInventoryScriptAccess(org_member)
+    assert not access.can_copy(custom_inv)
+    assert access.get_user_capabilities(custom_inv, method_list=['edit', 'delete', 'copy']) == {
+        'edit': True,
+        'delete': True,
+        'copy': False
+    }
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("role", ["admin_role", "inventory_admin_role"])
+def test_access_admin(role, organization, inventory, user):
     a = user('admin', False)
     inventory.organization = organization
-    organization.admin_role.members.add(a)
+
+    role = getattr(organization, role)
+    role.members.add(a)
 
     access = InventoryAccess(a)
     assert access.can_read(inventory)
@@ -162,7 +170,7 @@ def test_host_access(organization, inventory, group, user, group_factory):
 def test_inventory_source_credential_check(rando, inventory_source, credential):
     inventory_source.inventory.admin_role.members.add(rando)
     access = InventorySourceAccess(rando)
-    assert not access.can_change(inventory_source, {'credential': credential})
+    assert not access.can_attach(inventory_source, credential, 'credentials', {'id': credential.pk})
 
 
 @pytest.mark.django_db

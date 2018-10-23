@@ -14,7 +14,7 @@ function BaseInputController (strings) {
         scope.state._required = scope.state.required || false;
         scope.state._isValid = scope.state._isValid || false;
         scope.state._disabled = scope.state._disabled || false;
-        scope.state._activeModel = '_value';
+        scope.state._activeModel = scope.state._activeModel || '_value';
 
         if (scope.state.ask_at_runtime) {
             scope.state._displayPromptOnLaunch = true;
@@ -41,6 +41,10 @@ function BaseInputController (strings) {
 
         form.register(type, scope);
 
+        if (scope.form && scope.form.disabled) {
+            scope.state._enableToggle = false;
+        }
+
         vm.validate = () => {
             let isValid = true;
             let message = '';
@@ -49,7 +53,8 @@ function BaseInputController (strings) {
                 scope.state._touched = true;
             }
 
-            if (scope.state._required && !scope.state._value && !scope.state._displayValue) {
+            if (scope.state._required && (!scope.state._value || !scope.state._value[0]) &&
+                !scope.state._displayValue) {
                 isValid = false;
                 message = vm.strings.get('message.REQUIRED_INPUT_MISSING');
             } else if (scope.state._validate) {
@@ -85,9 +90,7 @@ function BaseInputController (strings) {
             vm.updateValidationState(result);
         };
 
-        vm.toggleRevertReplace = () => {
-            scope.state._isBeingReplaced = !scope.state._isBeingReplaced;
-
+        vm.onRevertReplaceToggle = () => {
             if (!scope.state._isBeingReplaced) {
                 scope.state._buttonText = vm.strings.get('REPLACE');
                 scope.state._disabled = true;
@@ -95,6 +98,7 @@ function BaseInputController (strings) {
                 scope.state._value = scope.state._preEditValue;
                 scope.state._activeModel = '_displayValue';
                 scope.state._placeholder = vm.strings.get('ENCRYPTED');
+                vm.check();
             } else {
                 scope.state._buttonText = vm.strings.get('REVERT');
                 scope.state._disabled = false;
@@ -102,6 +106,10 @@ function BaseInputController (strings) {
                 scope.state._activeModel = '_value';
                 scope.state._value = '';
                 scope.state._placeholder = '';
+                vm.check();
+            }
+            if (scope.form && scope.form.disabled) {
+                scope.state._enableToggle = false;
             }
         };
 

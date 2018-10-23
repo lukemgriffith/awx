@@ -165,8 +165,7 @@ angular.module('Utilities', ['RestServices', 'Utilities'])
                 Alert('Conflict', data.conflict || "Resource currently in use.");
             } else if (status === 410) {
                 Alert('Deleted Object', 'The requested object was previously deleted and can no longer be accessed.');
-            } else if ((status === 'Token is expired') || (status === 401 && data.detail && data.detail === 'Token is expired') ||
-                (status === 401 && data && data.detail && data.detail === 'Invalid token')) {
+            } else if ((status === 'Session is expired') || (status === 401)) {
                 if ($rootScope.sessionTimer) {
                     $rootScope.sessionTimer.expireSession('idle');
                 }
@@ -209,27 +208,30 @@ angular.module('Utilities', ['RestServices', 'Utilities'])
                     } else {
                         if (data[field]) {
                             scope[field + '_api_error'] = data[field][0];
-                            //scope[form.name + '_form'][field].$setValidity('apiError', false);
                             $('[name="' + field + '"]').addClass('ng-invalid');
+                            $('label[for="' + field + '"] span').addClass('error-color');
                             $('html, body').animate({scrollTop: $('[name="' + field + '"]').offset().top}, 0);
                             fieldErrors = true;
+                            if(form.fields[field].codeMirror){
+                                $(`#cm-${field}-container .CodeMirror`).addClass('error-border');
+                            }
                         }
                     }
                 }
-                if ((!fieldErrors) && defaultMsg) {
+                if (defaultMsg) {
                     Alert(defaultMsg.hdr, defaultMsg.msg);
                 }
             } else if (typeof data === 'object' && data !== null) {
                 if (Object.keys(data).length > 0) {
                     keys = Object.keys(data);
-                    if (Array.isArray(data[keys[0]])) {
-                        msg = data[keys[0]][0];
-                    } else {
-                        msg = "";
-                        _.forOwn(data, function(value, key) {
+                    msg = "";
+                    _.forOwn(data, function(value, key) {
+                        if (Array.isArray(data[key])) {
+                            msg += `${key}: ${data[key][0]}`;
+                        } else {
                             msg += `${key} : ${value} `;
-                        });
-                    }
+                        }
+                    });
                     Alert(defaultMsg.hdr, msg);
                 } else {
                     Alert(defaultMsg.hdr, defaultMsg.msg);
@@ -636,6 +638,22 @@ angular.module('Utilities', ['RestServices', 'Utilities'])
 
                         if (!multiple) {
                             config.minimumResultsForSearch = 1;
+                            config.matcher = function(params, data) {
+                                // If there are no search terms, return all of the data
+                                if ($.trim(params.term) === '' &&
+                                    data.text.indexOf("Choose an") === -1) {
+                                        return data;
+                                }
+
+                                // Do not display the item if there is no 'text' property
+                                if (typeof data.text === 'undefined' ||
+                                    data.text.indexOf("Choose an") > -1) {
+                                  return null;
+                                }
+
+                                // Return `null` if the term should not be displayed
+                                return null;
+                            };
                         }
                     }
 
@@ -750,10 +768,10 @@ angular.module('Utilities', ['RestServices', 'Utilities'])
                 if (!options) {
                   Rest.setUrl(url);
                   Rest.options()
-                      .success(function(data) {
+                      .then(({data}) => {
                           withOptions(data);
                       })
-                      .error(function(data, status) {
+                      .catch(({data, status}) => {
                           ProcessErrors(scope, data, status, null, {
                               hdr: 'Error!',
                               msg: 'Failed to get ' + url + '. OPTIONS status: ' + status

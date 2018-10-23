@@ -7,10 +7,10 @@
 // import HostsService from './../hosts/host.service';
 export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
     'rbacUiControlService', 'Dataset', '$state', '$filter', 'Prompt', 'Wait',
-    'HostsService', 'SetStatus', 'canAdd', 'i18n', '$transitions',
+    'HostsService', 'SetStatus', 'canAdd', 'i18n', 'InventoryHostsStrings', '$transitions',
     function($scope, ListDefinition, $rootScope, GetBasePath,
     rbacUiControlService, Dataset, $state, $filter, Prompt, Wait,
-    HostsService, SetStatus, canAdd, i18n, $transitions) {
+    HostsService, SetStatus, canAdd, i18n, InventoryHostsStrings, $transitions) {
 
     let list = ListDefinition;
 
@@ -19,6 +19,7 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
     function init(){
         $scope.canAdd = canAdd;
         $scope.enableSmartInventoryButton = false;
+        $scope.smartInventoryButtonTooltip = InventoryHostsStrings.get('smartinventorybutton.DISABLED_INSTRUCTIONS');
 
         // Search init
         $scope.list = list;
@@ -45,14 +46,16 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
             if(trans.params('to') && trans.params('to').host_search) {
                 let hasMoreThanDefaultKeys = false;
                 angular.forEach(trans.params('to').host_search, function(value, key) {
-                    if(key !== 'order_by' && key !== 'page_size') {
+                    if(key !== 'order_by' && key !== 'page_size' && key !== 'page') {
                         hasMoreThanDefaultKeys = true;
                     }
                 });
                 $scope.enableSmartInventoryButton = hasMoreThanDefaultKeys ? true : false;
+                $scope.smartInventoryButtonTooltip = hasMoreThanDefaultKeys ? InventoryHostsStrings.get('smartinventorybutton.ENABLED_INSTRUCTIONS') : InventoryHostsStrings.get('smartinventorybutton.DISABLED_INSTRUCTIONS');
             }
             else {
                 $scope.enableSmartInventoryButton = false;
+                $scope.smartInventoryButtonTooltip = InventoryHostsStrings.get('smartinventorybutton.DISABLED_INSTRUCTIONS');
             }
         });
 
@@ -70,8 +73,6 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
                     $scope.hostsSelected = null;
                 }
             }
-
-            $scope.systemTrackingDisabled = ($scope.hostsSelected && $scope.hostsSelected.length > 2) ? true : false;
         });
 
     }
@@ -89,7 +90,12 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
         $state.go('inventories.edit.hosts.add');
     };
     $scope.editHost = function(host){
-        $state.go('.edit', {inventory_id: host.inventory_id, host_id: host.id});
+        if($state.includes('inventories.edit.hosts')) {
+            $state.go('inventories.edit.hosts.edit', {host_id: host.id});
+        }
+        else if($state.includes('inventories.editSmartInventory.hosts')) {
+            $state.go('inventories.editSmartInventory.hosts.edit', {host_id: host.id});
+        }
     };
     $scope.goToInsights = function(host){
         $state.go('inventories.edit.hosts.edit.insights', {inventory_id: host.inventory_id, host_id:host.id});
@@ -104,7 +110,7 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
 
                 let reloadListStateParams = null;
 
-                if($scope.hosts.length === 1 && $state.params.host_search && !_.isEmpty($state.params.host_search.page) && $state.params.host_search.page !== '1') {
+                if($scope.hosts.length === 1 && $state.params.host_search && _.has($state, 'params.host_search.page') && $state.params.host_search.page !== '1') {
                     reloadListStateParams = _.cloneDeep($state.params);
                     reloadListStateParams.host_search.page = (parseInt(reloadListStateParams.host_search.page)-1).toString();
                 }
@@ -143,15 +149,6 @@ export default ['$scope', 'ListDefinition', '$rootScope', 'GetBasePath',
 
     $scope.smartInventory = function() {
         $state.go('inventories.addSmartInventory');
-    };
-
-    $scope.systemTracking = function(){
-        var hostIds = _.map($scope.hostsSelected, (host) => host.id);
-        $state.go('systemTracking', {
-            inventoryId: $state.params.inventory_id ? $state.params.inventory_id : $state.params.smartinventory_id,
-            hosts: $scope.hostsSelected,
-            hostIds: hostIds
-        });
     };
 
     $scope.setAdhocPattern = function(){

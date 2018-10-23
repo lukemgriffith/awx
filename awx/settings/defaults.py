@@ -4,12 +4,8 @@
 import os
 import re  # noqa
 import sys
-import ldap
-import djcelery
+import six
 from datetime import timedelta
-
-from kombu import Queue, Exchange
-from kombu.common import Broadcast
 
 # global settings
 from django.conf import global_settings
@@ -29,6 +25,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 def is_testing(argv=None):
     import sys
     '''Return True if running django or py.test unit tests.'''
+    if 'PYTEST_CURRENT_TEST' in os.environ.keys():
+        return True
     argv = sys.argv if argv is None else argv
     if len(argv) >= 1 and ('py.test' in argv[0] or 'py/test.py' in argv[0]):
         return True
@@ -41,8 +39,14 @@ def IS_TESTING(argv=None):
     return is_testing(argv)
 
 
+if "pytest" in sys.modules:
+    import mock
+    with mock.patch('__main__.__builtins__.dir', return_value=[]):
+        import ldap
+else:
+    import ldap
+
 DEBUG = True
-TEMPLATE_DEBUG = DEBUG
 SQL_DEBUG = DEBUG
 
 ADMINS = (
@@ -57,7 +61,7 @@ DATABASES = {
         'NAME': os.path.join(BASE_DIR, 'awx.sqlite3'),
         'ATOMIC_REQUESTS': True,
         'TEST': {
-            # Test database cannot be :memory: for celery/inventory tests.
+            # Test database cannot be :memory: for inventory tests.
             'NAME': os.path.join(BASE_DIR, 'awx_test.sqlite3'),
         },
     }
@@ -73,7 +77,7 @@ DATABASES = {
 # timezone as the operating system.
 # If running in a Windows environment this must be set to the same as your
 # system time zone.
-TIME_ZONE = None
+TIME_ZONE = 'UTC'
 
 # Language code for this installation. All choices can be found here:
 # http://www.i18nguy.com/unicode/language-identifiers.html
@@ -110,6 +114,8 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'public', 'media')
 # trailing slash if there is a path component (optional in other cases).
 # Examples: "http://media.lawrence.com", "http://example.com/media/"
 MEDIA_URL = '/media/'
+
+LOGIN_URL = '/api/login/'
 
 # Absolute filesystem path to the directory to host projects (with playbooks).
 # This directory should not be web-accessible.
@@ -166,7 +172,11 @@ STDOUT_MAX_BYTES_DISPLAY = 1048576
 
 # Returned in the header on event api lists as a recommendation to the UI
 # on how many events to display before truncating/hiding
-RECOMMENDED_MAX_EVENTS_DISPLAY_HEADER = 4000
+MAX_UI_JOB_EVENTS = 4000
+
+# Returned in index.html, tells the UI if it should make requests
+# to update job data in response to status changes websocket events
+UI_LIVE_UPDATES_ENABLED = True
 
 # The maximum size of the ansible callback event's res data structure
 # beyond this limit and the value will be removed
@@ -189,28 +199,59 @@ JOB_EVENT_MAX_QUEUE_SIZE = 10000
 # Disallow sending session cookies over insecure connections
 SESSION_COOKIE_SECURE = True
 
+# Seconds before sessions expire.
+# Note: This setting may be overridden by database settings.
+SESSION_COOKIE_AGE = 1800
+
+# Maximum number of per-user valid, concurrent sessions.
+# -1 is unlimited
+# Note: This setting may be overridden by database settings.
+SESSIONS_PER_USER = -1
+
+CSRF_USE_SESSIONS = False
+
 # Disallow sending csrf cookies over insecure connections
 CSRF_COOKIE_SECURE = True
 
 # Limit CSRF cookies to browser sessions
 CSRF_COOKIE_AGE = None
 
-TEMPLATE_CONTEXT_PROCESSORS = (  # NOQA
-    'django.contrib.auth.context_processors.auth',
-    'django.core.context_processors.debug',
-    'django.core.context_processors.i18n',
-    'django.core.context_processors.media',
-    'django.core.context_processors.static',
-    'django.core.context_processors.tz',
-    'django.contrib.messages.context_processors.messages',
-    'django.core.context_processors.request',
-    'awx.ui.context_processors.settings',
-    'awx.ui.context_processors.version',
-    'social.apps.django_app.context_processors.backends',
-    'social.apps.django_app.context_processors.login_redirect',
-)
+TEMPLATES = [
+    {
+        'NAME': 'default',
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'OPTIONS': {
+            'debug': DEBUG,
+            'context_processors': [# NOQA
+                'django.contrib.auth.context_processors.auth',
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.template.context_processors.i18n',
+                'django.template.context_processors.media',
+                'django.template.context_processors.static',
+                'django.template.context_processors.tz',
+                'django.contrib.messages.context_processors.messages',
+                'awx.ui.context_processors.settings',
+                'awx.ui.context_processors.version',
+                'social_django.context_processors.backends',
+                'social_django.context_processors.login_redirect',
+            ],
+            'loaders': [(
+                'django.template.loaders.cached.Loader',
+                ('django.template.loaders.filesystem.Loader',
+                'django.template.loaders.app_directories.Loader',),
+            )],
+            'builtins': ['awx.main.templatetags.swagger'],
+        },
+        'DIRS': [
+            os.path.join(BASE_DIR, 'templates'),
+        ],
+    },
+]
 
 MIDDLEWARE_CLASSES = (  # NOQA
+    'awx.main.middleware.MigrationRanCheckMiddleware',
+    'awx.main.middleware.TimingMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -220,20 +261,11 @@ MIDDLEWARE_CLASSES = (  # NOQA
     'awx.main.middleware.ActivityStreamMiddleware',
     'awx.sso.middleware.SocialAuthMiddleware',
     'crum.CurrentRequestUserMiddleware',
-    'awx.main.middleware.AuthTokenTimeoutMiddleware',
     'awx.main.middleware.URLModificationMiddleware',
+    'awx.main.middleware.DeprecatedAuthTokenMiddleware',
+    'awx.main.middleware.SessionTimeoutMiddleware',
 )
 
-TEMPLATE_DIRS = (
-    os.path.join(BASE_DIR, 'templates'),
-)
-
-TEMPLATE_LOADERS = (
-    ('django.template.loaders.cached.Loader', (
-        'django.template.loaders.filesystem.Loader',
-        'django.template.loaders.app_directories.Loader',
-    )),
-)
 
 ROOT_URLCONF = 'awx.urls'
 
@@ -246,20 +278,19 @@ INSTALLED_APPS = (
     'django.contrib.sessions',
     'django.contrib.sites',
     'django.contrib.staticfiles',
+    'oauth2_provider',
     'rest_framework',
     'django_extensions',
-    'djcelery',
-    'kombu.transport.django',
     'channels',
     'polymorphic',
     'taggit',
-    'social.apps.django_app.default',
+    'social_django',
     'awx.conf',
     'awx.main',
     'awx.api',
     'awx.ui',
     'awx.sso',
-    'solo',
+    'solo'
 )
 
 INTERNAL_IPS = ('127.0.0.1',)
@@ -269,9 +300,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'awx.api.pagination.Pagination',
     'PAGE_SIZE': 25,
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'awx.api.authentication.TokenAuthentication',
+        'awx.api.authentication.LoggedOAuth2Authentication',
+        'awx.api.authentication.SessionAuthentication',
         'awx.api.authentication.LoggedBasicAuthentication',
-        #'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'awx.api.permissions.ModelAccessPermission',
@@ -300,16 +331,31 @@ REST_FRAMEWORK = {
 
 AUTHENTICATION_BACKENDS = (
     'awx.sso.backends.LDAPBackend',
+    'awx.sso.backends.LDAPBackend1',
+    'awx.sso.backends.LDAPBackend2',
+    'awx.sso.backends.LDAPBackend3',
+    'awx.sso.backends.LDAPBackend4',
+    'awx.sso.backends.LDAPBackend5',
     'awx.sso.backends.RADIUSBackend',
     'awx.sso.backends.TACACSPlusBackend',
-    'social.backends.google.GoogleOAuth2',
-    'social.backends.github.GithubOAuth2',
-    'social.backends.github.GithubOrganizationOAuth2',
-    'social.backends.github.GithubTeamOAuth2',
-    'social.backends.azuread.AzureADOAuth2',
+    'social_core.backends.google.GoogleOAuth2',
+    'social_core.backends.github.GithubOAuth2',
+    'social_core.backends.github.GithubOrganizationOAuth2',
+    'social_core.backends.github.GithubTeamOAuth2',
+    'social_core.backends.azuread.AzureADOAuth2',
     'awx.sso.backends.SAMLAuth',
     'django.contrib.auth.backends.ModelBackend',
 )
+
+
+# Django OAuth Toolkit settings
+OAUTH2_PROVIDER_APPLICATION_MODEL = 'main.OAuth2Application'
+OAUTH2_PROVIDER_ACCESS_TOKEN_MODEL = 'main.OAuth2AccessToken'
+OAUTH2_PROVIDER_REFRESH_TOKEN_MODEL = 'oauth2_provider.RefreshToken'
+
+OAUTH2_PROVIDER = {'ACCESS_TOKEN_EXPIRE_SECONDS': 31536000000,
+                   'AUTHORIZATION_CODE_EXPIRE_SECONDS': 600}
+ALLOW_OAUTH2_FOR_EXTERNAL_USERS = False
 
 # LDAP server (default to None to skip using LDAP authentication).
 # Note: This setting may be overridden by database settings.
@@ -336,15 +382,6 @@ TACACSPLUS_PORT = 49
 TACACSPLUS_SECRET = ''
 TACACSPLUS_SESSION_TIMEOUT = 5
 TACACSPLUS_AUTH_PROTOCOL = 'ascii'
-
-# Seconds before auth tokens expire.
-# Note: This setting may be overridden by database settings.
-AUTH_TOKEN_EXPIRATION = 1800
-
-# Maximum number of per-user valid, concurrent tokens.
-# -1 is unlimited
-# Note: This setting may be overridden by database settings.
-AUTH_TOKEN_PER_USER = -1
 
 # Enable / Disable HTTP Basic Authentication used in the API browser
 # Note: Session limits are not enforced when using HTTP Basic Authentication.
@@ -382,6 +419,18 @@ EMAIL_HOST_USER = ''
 EMAIL_HOST_PASSWORD = ''
 EMAIL_USE_TLS = False
 
+# The number of seconds to sleep between status checks for jobs running on isolated nodes
+AWX_ISOLATED_CHECK_INTERVAL = 30
+
+# The timeout (in seconds) for launching jobs on isolated nodes
+AWX_ISOLATED_LAUNCH_TIMEOUT = 600
+
+# Ansible connection timeout (in seconds) for communicating with isolated instances
+AWX_ISOLATED_CONNECTION_TIMEOUT = 10
+
+# The time (in seconds) between the periodic isolated heartbeat status check
+AWX_ISOLATED_PERIODIC_CHECK = 600
+
 # Memcached django cache configuration
 # CACHES = {
 #     'default': {
@@ -410,40 +459,9 @@ DEVSERVER_DEFAULT_PORT = '8013'
 # Set default ports for live server tests.
 os.environ.setdefault('DJANGO_LIVE_TEST_SERVER_ADDRESS', 'localhost:9013-9199')
 
-# Initialize Django-Celery.
-djcelery.setup_loader()
-
+BROKER_POOL_LIMIT = None
 BROKER_URL = 'amqp://guest:guest@localhost:5672//'
-CELERY_EVENT_QUEUE_TTL = 5
-CELERY_DEFAULT_QUEUE = 'tower'
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TRACK_STARTED = True
-CELERYD_TASK_TIME_LIMIT = None
-CELERYD_TASK_SOFT_TIME_LIMIT = None
-CELERYD_POOL_RESTARTS = True
-CELERYBEAT_SCHEDULER = 'celery.beat.PersistentScheduler'
-CELERYBEAT_MAX_LOOP_INTERVAL = 60
-CELERY_RESULT_BACKEND = 'djcelery.backends.database:DatabaseBackend'
-CELERY_IMPORTS = ('awx.main.scheduler.tasks',)
-CELERY_QUEUES = (
-    Queue('default', Exchange('default'), routing_key='default'),
-    Queue('tower', Exchange('tower'), routing_key='tower'),
-    Queue('tower_scheduler', Exchange('scheduler', type='topic'), routing_key='tower_scheduler.job.#', durable=False),
-    Broadcast('tower_broadcast_all')
-)
-CELERY_ROUTES = {'awx.main.scheduler.tasks.run_task_manager': {'queue': 'tower',
-                                                               'routing_key': 'tower'},
-                 'awx.main.scheduler.tasks.run_job_launch': {'queue': 'tower_scheduler',
-                                                             'routing_key': 'tower_scheduler.job.launch'},
-                 'awx.main.scheduler.tasks.run_job_complete': {'queue': 'tower_scheduler',
-                                                               'routing_key': 'tower_scheduler.job.complete'},
-                 'awx.main.tasks.cluster_node_heartbeat': {'queue': 'default',
-                                                           'routing_key': 'cluster.heartbeat'},
-                 'awx.main.tasks.purge_old_stdout_files': {'queue': 'default',
-                                                           'routing_key': 'cluster.heartbeat'}}
-
+CELERY_DEFAULT_QUEUE = 'awx_private_queue'
 CELERYBEAT_SCHEDULE = {
     'tower_scheduler': {
         'task': 'awx.main.tasks.awx_periodic_scheduler',
@@ -452,10 +470,6 @@ CELERYBEAT_SCHEDULE = {
     },
     'admin_checks': {
         'task': 'awx.main.tasks.run_administrative_checks',
-        'schedule': timedelta(days=30)
-    },
-    'authtoken_cleanup': {
-        'task': 'awx.main.tasks.cleanup_authtokens',
         'schedule': timedelta(days=30)
     },
     'cluster_heartbeat': {
@@ -470,44 +484,64 @@ CELERYBEAT_SCHEDULE = {
     'task_manager': {
         'task': 'awx.main.scheduler.tasks.run_task_manager',
         'schedule': timedelta(seconds=20),
-        'options': {'expires': 20,}
+        'options': {'expires': 20}
     },
+    'isolated_heartbeat': {
+        'task': 'awx.main.tasks.awx_isolated_heartbeat',
+        'schedule': timedelta(seconds=AWX_ISOLATED_PERIODIC_CHECK),
+        'options': {'expires': AWX_ISOLATED_PERIODIC_CHECK * 2},
+    }
 }
 AWX_INCONSISTENT_TASK_INTERVAL = 60 * 3
 
+AWX_CELERY_QUEUES_STATIC = [
+    six.text_type(CELERY_DEFAULT_QUEUE),
+]
+
+AWX_CELERY_BCAST_QUEUES_STATIC = [
+    six.text_type('tower_broadcast_all'),
+]
+
+ASGI_AMQP = {
+    'INIT_FUNC': 'awx.prepare_env',
+    'MODEL': 'awx.main.models.channels.ChannelGroup',
+}
+
 # Django Caching Configuration
-if is_testing():
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        },
-    }
-else:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
-            'LOCATION': 'memcached:11211',
-        },
-    }
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+        'LOCATION': 'memcached:11211',
+    },
+}
 
 # Social Auth configuration.
-SOCIAL_AUTH_STRATEGY = 'awx.sso.strategies.django_strategy.AWXDjangoStrategy'
-SOCIAL_AUTH_STORAGE = 'social.apps.django_app.default.models.DjangoStorage'
+SOCIAL_AUTH_STRATEGY = 'social_django.strategy.DjangoStrategy'
+SOCIAL_AUTH_STORAGE = 'social_django.models.DjangoStorage'
 SOCIAL_AUTH_USER_MODEL = AUTH_USER_MODEL  # noqa
-SOCIAL_AUTH_PIPELINE = (
-    'social.pipeline.social_auth.social_details',
-    'social.pipeline.social_auth.social_uid',
-    'social.pipeline.social_auth.auth_allowed',
-    'social.pipeline.social_auth.social_user',
-    'social.pipeline.user.get_username',
-    'social.pipeline.social_auth.associate_by_email',
-    'social.pipeline.user.create_user',
+
+_SOCIAL_AUTH_PIPELINE_BASE = (
+    'social_core.pipeline.social_auth.social_details',
+    'social_core.pipeline.social_auth.social_uid',
+    'social_core.pipeline.social_auth.auth_allowed',
+    'social_core.pipeline.social_auth.social_user',
+    'social_core.pipeline.user.get_username',
+    'social_core.pipeline.social_auth.associate_by_email',
+    'social_core.pipeline.user.create_user',
     'awx.sso.pipeline.check_user_found_or_created',
-    'social.pipeline.social_auth.associate_user',
-    'social.pipeline.social_auth.load_extra_data',
+    'social_core.pipeline.social_auth.associate_user',
+    'social_core.pipeline.social_auth.load_extra_data',
     'awx.sso.pipeline.set_is_active_for_new_user',
-    'social.pipeline.user.user_details',
+    'social_core.pipeline.user.user_details',
     'awx.sso.pipeline.prevent_inactive_login',
+)
+SOCIAL_AUTH_PIPELINE = _SOCIAL_AUTH_PIPELINE_BASE + (
+    'awx.sso.pipeline.update_user_orgs',
+    'awx.sso.pipeline.update_user_teams',
+)
+SOCIAL_AUTH_SAML_PIPELINE = _SOCIAL_AUTH_PIPELINE_BASE + (
+    'awx.sso.pipeline.update_user_orgs_by_saml_attr',
+    'awx.sso.pipeline.update_user_teams_by_saml_attr',
     'awx.sso.pipeline.update_user_orgs',
     'awx.sso.pipeline.update_user_teams',
 )
@@ -519,7 +553,7 @@ SOCIAL_AUTH_INACTIVE_USER_URL = '/sso/inactive/'
 
 SOCIAL_AUTH_RAISE_EXCEPTIONS = False
 SOCIAL_AUTH_USERNAME_IS_FULL_EMAIL = False
-SOCIAL_AUTH_SLUGIFY_USERNAMES = True
+#SOCIAL_AUTH_SLUGIFY_USERNAMES = True
 SOCIAL_AUTH_CLEAN_USERNAMES = True
 
 SOCIAL_AUTH_SANITIZE_REDIRECTS = True
@@ -555,8 +589,11 @@ SOCIAL_AUTH_SAML_TECHNICAL_CONTACT = {}
 SOCIAL_AUTH_SAML_SUPPORT_CONTACT = {}
 SOCIAL_AUTH_SAML_ENABLED_IDPS = {}
 
-# Any ANSIBLE_* settings will be passed to the subprocess environment by the
-# celery task.
+SOCIAL_AUTH_SAML_ORGANIZATION_ATTR = {}
+SOCIAL_AUTH_SAML_TEAM_ATTR = {}
+
+# Any ANSIBLE_* settings will be passed to the task runner subprocess
+# environment
 
 # Do not want AWX to ask interactive questions and want it to be friendly with
 # reprovisioning
@@ -570,8 +607,7 @@ ANSIBLE_PARAMIKO_RECORD_HOST_KEYS = False
 # output
 ANSIBLE_FORCE_COLOR = True
 
-# Additional environment variables to be passed to the subprocess started by
-# the celery task.
+# Additional environment variables to be passed to the ansible subprocesses
 AWX_TASK_ENV = {}
 
 # Flag to enable/disable updating hosts M2M when saving job events.
@@ -579,6 +615,14 @@ CAPTURE_JOB_EVENT_HOSTS = False
 
 # Rebuild Host Smart Inventory memberships.
 AWX_REBUILD_SMART_MEMBERSHIP = False
+
+# By default, allow arbitrary Jinja templating in extra_vars defined on a Job Template
+ALLOW_JINJA_IN_EXTRA_VARS = 'template'
+
+# Enable dynamically pulling roles from a requirement.yml file
+# when updating SCM projects 
+# Note: This setting may be overridden by database settings.
+AWX_ROLES_ENABLED = True
 
 # Enable bubblewrap support for running jobs (playbook runs only).
 # Note: This setting may be overridden by database settings.
@@ -608,20 +652,8 @@ AWX_PROOT_BASE_PATH = "/tmp"
 # Note: This setting may be overridden by database settings.
 AWX_ANSIBLE_CALLBACK_PLUGINS = ""
 
-# Time at which an HA node is considered active
-AWX_ACTIVE_NODE_TIME = 7200
-
-# The number of seconds to sleep between status checks for jobs running on isolated nodes
-AWX_ISOLATED_CHECK_INTERVAL = 30
-
-# The timeout (in seconds) for launching jobs on isolated nodes
-AWX_ISOLATED_LAUNCH_TIMEOUT = 600
-
-# Ansible connection timeout (in seconds) for communicating with isolated instances
-AWX_ISOLATED_CONNECTION_TIMEOUT = 10
-
-# The time (in seconds) between the periodic isolated heartbeat status check
-AWX_ISOLATED_PERIODIC_CHECK = 600
+# Automatically remove nodes that have missed their heartbeats after some time
+AWX_AUTO_DEPROVISION_INSTANCES = False
 
 # Enable Pendo on the UI, possible values are 'off', 'anonymous', and 'detailed'
 # Note: This setting may be overridden by database settings.
@@ -822,6 +854,26 @@ OPENSTACK_EXCLUDE_EMPTY_GROUPS = True
 OPENSTACK_INSTANCE_ID_VAR = 'openstack.id'
 
 # ---------------------
+# ----- oVirt4 -----
+# ---------------------
+RHV_ENABLED_VAR = 'status'
+RHV_ENABLED_VALUE = 'up'
+RHV_GROUP_FILTER = r'^.+$'
+RHV_HOST_FILTER = r'^.+$'
+RHV_EXCLUDE_EMPTY_GROUPS = True
+RHV_INSTANCE_ID_VAR = 'id'
+
+# ---------------------
+# ----- Tower     -----
+# ---------------------
+TOWER_ENABLED_VAR = 'remote_tower_enabled'
+TOWER_ENABLED_VALUE = 'true'
+TOWER_GROUP_FILTER = r'^.+$'
+TOWER_HOST_FILTER = r'^.+$'
+TOWER_EXCLUDE_EMPTY_GROUPS = True
+TOWER_INSTANCE_ID_VAR = 'remote_tower_id'
+
+# ---------------------
 # ----- Foreman -----
 # ---------------------
 SATELLITE6_ENABLED_VAR = 'foreman.enabled'
@@ -830,18 +882,17 @@ SATELLITE6_GROUP_FILTER = r'^.+$'
 SATELLITE6_HOST_FILTER = r'^.+$'
 SATELLITE6_EXCLUDE_EMPTY_GROUPS = True
 SATELLITE6_INSTANCE_ID_VAR = 'foreman.id'
-SATELLITE6_GROUP_PREFIX = 'foreman_'
-SATELLITE6_GROUP_PATTERNS = ["{app}-{tier}-{color}", "{app}-{color}", "{app}", "{tier}"]
+# SATELLITE6_GROUP_PREFIX and SATELLITE6_GROUP_PATTERNS defined in source vars
 
 # ---------------------
 # ----- CloudForms -----
 # ---------------------
-CLOUDFORMS_ENABLED_VAR = 'power_state'
+CLOUDFORMS_ENABLED_VAR = 'cloudforms.power_state'
 CLOUDFORMS_ENABLED_VALUE = 'on'
 CLOUDFORMS_GROUP_FILTER = r'^.+$'
 CLOUDFORMS_HOST_FILTER = r'^.+$'
 CLOUDFORMS_EXCLUDE_EMPTY_GROUPS = True
-CLOUDFORMS_INSTANCE_ID_VAR = 'id'
+CLOUDFORMS_INSTANCE_ID_VAR = 'cloudforms.id'
 
 # ---------------------
 # ----- Custom -----
@@ -890,6 +941,7 @@ FACT_CACHE_PORT = 6564
 
 # Note: This setting may be overridden by database settings.
 ORG_ADMINS_CAN_SEE_ALL_USERS = True
+MANAGE_ORGANIZATION_AUTH = True
 
 # Note: This setting may be overridden by database settings.
 TOWER_ADMIN_ALERTS = True
@@ -926,6 +978,9 @@ LOGGING = {
         'require_debug_true_or_test': {
             '()': 'awx.main.utils.RequireDebugTrueOrTest',
         },
+        'external_log_enabled': {
+            '()': 'awx.main.utils.filters.ExternalLoggerEnabled'
+        },
     },
     'formatters': {
         'simple': {
@@ -937,7 +992,10 @@ LOGGING = {
         'timed_import': {
             '()': 'awx.main.utils.formatters.TimeFormatter',
             'format': '%(relativeSeconds)9.3f %(levelname)-8s %(message)s'
-        }
+        },
+        'dispatcher': {
+            'format': '%(asctime)s %(levelname)-8s %(name)s PID:%(process)d %(message)s',
+        },
     },
     'handlers': {
         'console': {
@@ -959,11 +1017,10 @@ LOGGING = {
             'class': 'logging.NullHandler',
             'formatter': 'simple',
         },
-        'http_receiver': {
-            'class': 'awx.main.utils.handlers.HTTPSNullHandler',
-            'level': 'DEBUG',
+        'external_logger': {
+            'class': 'awx.main.utils.handlers.AWXProxyHandler',
             'formatter': 'json',
-            'host': '',
+            'filters': ['external_log_enabled'],
         },
         'mail_admins': {
             'level': 'ERROR',
@@ -988,6 +1045,19 @@ LOGGING = {
             'backupCount': 5,
             'formatter':'simple',
         },
+        'dispatcher': {
+            'level': 'WARNING',
+            'class':'logging.handlers.RotatingFileHandler',
+            'filters': ['require_debug_false'],
+            'filename': os.path.join(LOG_ROOT, 'dispatcher.log'),
+            'maxBytes': 1024 * 1024 * 5, # 5 MB
+            'backupCount': 5,
+            'formatter':'dispatcher',
+        },
+        'celery.beat': {
+            'class':'logging.StreamHandler',
+            'level': 'ERROR'
+        },  # don't log every celerybeat wakeup
         'inventory_import': {
             'level': 'DEBUG',
             'class':'logging.StreamHandler',
@@ -1056,7 +1126,7 @@ LOGGING = {
             'handlers': ['console'],
         },
         'awx': {
-            'handlers': ['console', 'file', 'tower_warnings'],
+            'handlers': ['console', 'file', 'tower_warnings', 'external_logger'],
             'level': 'DEBUG',
         },
         'awx.conf': {
@@ -1069,8 +1139,12 @@ LOGGING = {
         },
         'awx.main': {
             'handlers': ['null']
-        }, 'awx.main.commands.run_callback_receiver': {
+        },
+        'awx.main.commands.run_callback_receiver': {
             'handlers': ['callback_receiver'],
+        },
+        'awx.main.dispatch': {
+            'handlers': ['dispatcher'],
         },
         'awx.isolated.manager.playbooks': {
             'handlers': ['management_playbooks'],
@@ -1081,28 +1155,24 @@ LOGGING = {
             'propagate': False
         },
         'awx.main.tasks': {
-            'handlers': ['task_system'],
+            'handlers': ['task_system', 'external_logger'],
+            'propagate': False
         },
         'awx.main.scheduler': {
-            'handlers': ['task_system'],
-        },
-        'awx.main.consumers': {
-            'handlers': ['null']
+            'handlers': ['task_system', 'external_logger'],
+            'propagate': False
         },
         'awx.main.access': {
-            'handlers': ['null'],
-            'propagate': False,
+            'level': 'INFO',  # very verbose debug-level logs
         },
         'awx.main.signals': {
-            'handlers': ['null'],
-            'propagate': False,
+            'level': 'INFO',  # very verbose debug-level logs
         },
         'awx.api.permissions': {
-            'handlers': ['null'],
-            'propagate': False,
+            'level': 'INFO',  # very verbose debug-level logs
         },
         'awx.analytics': {
-            'handlers': ['http_receiver'],
+            'handlers': ['external_logger'],
             'level': 'INFO',
             'propagate': False
         },
@@ -1124,4 +1194,12 @@ LOGGING = {
         },
     }
 }
+# Apply coloring to messages logged to the console
 COLOR_LOGS = False
+
+# https://github.com/django-polymorphic/django-polymorphic/issues/195
+# FIXME: Disabling models.E006 warning until we can renamed Project and InventorySource
+SILENCED_SYSTEM_CHECKS = ['models.E006']
+
+# Use middleware to get request statistics
+AWX_REQUEST_PROFILE = False

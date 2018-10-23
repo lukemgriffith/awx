@@ -1,23 +1,25 @@
+# -*- coding: utf-8 -*-
 import mock
 import pytest
 import requests
+from copy import deepcopy
 
 from collections import namedtuple
 
 from awx.api.views import (
     ApiVersionRootView,
     JobTemplateLabelList,
-    JobTemplateSurveySpec,
     InventoryInventorySourcesUpdate,
-    InventoryHostsList,
     HostInsights,
+    JobTemplateSurveySpec
 )
 
 from awx.main.models import (
     Host,
 )
+from awx.main.views import handle_error
 
-from awx.main.managers import HostManager
+from rest_framework.test import APIRequestFactory
 
 
 @pytest.fixture
@@ -27,10 +29,15 @@ def mock_response_new(mocker):
     return m
 
 
+def test_handle_error():
+    # Assure that templating of error does not raise errors
+    request = APIRequestFactory().get('/fooooo/')
+    handle_error(request)
+
+
 class TestApiRootView:
     def test_get_endpoints(self, mocker, mock_response_new):
         endpoints = [
-            'authtoken',
             'ping',
             'config',
             #'settings',
@@ -78,19 +85,6 @@ class TestJobTemplateLabelList:
 
             super(JobTemplateLabelList, view).unattach(mock_request, None, None)
             assert mixin_unattach.called_with(mock_request, None, None)
-
-
-class TestJobTemplateSurveySpec(object):
-    @mock.patch('awx.api.views.feature_enabled', lambda feature: True)
-    def test_get_password_type(self, mocker, mock_response_new):
-        JobTemplate = namedtuple('JobTemplate', 'survey_spec')
-        obj = JobTemplate(survey_spec={'spec':[{'type': 'password', 'default': 'my_default'}]})
-        with mocker.patch.object(JobTemplateSurveySpec, 'get_object', return_value=obj):
-            view = JobTemplateSurveySpec()
-            response = view.get(mocker.MagicMock())
-            assert response == mock_response_new
-            # which there was a better way to do this!
-            assert response.call_args[0][1]['spec'][0]['default'] == '$encrypted$'
 
 
 class TestInventoryInventorySourcesUpdate:
@@ -145,7 +139,7 @@ class TestHostInsights():
     @pytest.mark.parametrize("status_code, exception, error, message", [
         (502, requests.exceptions.SSLError, 'SSLError while trying to connect to https://myexample.com/whocares/me/', None,),
         (504, requests.exceptions.Timeout, 'Request to https://myexample.com/whocares/me/ timed out.', None,),
-        (502, requests.exceptions.RequestException, 'booo!', 'Unkown exception booo! while trying to GET https://myexample.com/whocares/me/'),
+        (502, requests.exceptions.RequestException, 'booo!', 'Unknown exception booo! while trying to GET https://myexample.com/whocares/me/'),
     ])
     def test_get_insights_request_exception(self, patch_parent, mocker, status_code, exception, error, message):
         view = HostInsights()
@@ -225,15 +219,197 @@ class TestHostInsights():
         assert resp.status_code == 404
 
 
-class TestInventoryHostsList(object):
+class TestSurveySpecValidation:
 
-    def test_host_list_smart_inventory(self, mocker):
-        Inventory = namedtuple('Inventory', ['kind', 'host_filter', 'hosts', 'organization_id'])
-        obj = Inventory(kind='smart', host_filter='localhost', hosts=HostManager(), organization_id=None)
-        obj.hosts.instance = obj
+    def test_create_text_encrypted(self):
+        view = JobTemplateSurveySpec()
+        resp = view._validate_spec_data({
+            "name": "new survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "$encrypted$",
+                    "max": 1024,
+                    "required": True,
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "text"
+                }
+            ]
+        }, {})
+        assert resp.status_code == 400
+        assert '$encrypted$ is a reserved keyword for password question defaults' in str(resp.data['error'])
 
-        with mock.patch.object(InventoryHostsList, 'get_parent_object', return_value=obj):
-            with mock.patch('awx.main.utils.filters.SmartFilter.query_from_string') as mock_query:
-                view = InventoryHostsList()
-                view.get_queryset()
-                mock_query.assert_called_once_with('localhost')
+    def test_change_encrypted_var_name(self):
+        view = JobTemplateSurveySpec()
+        old = {
+            "name": "old survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "$encrypted$foooooooo",
+                    "max": 1024,
+                    "required": True,
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "password"
+                }
+            ]
+        }
+        new = deepcopy(old)
+        new['spec'][0]['variable'] = 'openstack_username'
+        resp = view._validate_spec_data(new, old)
+        assert resp.status_code == 400
+        assert 'may not be used for new default' in str(resp.data['error'])
+
+    def test_use_saved_encrypted_default(self):
+        '''
+        Save is allowed, the $encrypted$ replacement is done
+        '''
+        view = JobTemplateSurveySpec()
+        old = {
+            "name": "old survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "$encrypted$foooooooo",
+                    "max": 1024,
+                    "required": True,
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "password"
+                }
+            ]
+        }
+        new = deepcopy(old)
+        new['spec'][0]['default'] = '$encrypted$'
+        new['spec'][0]['required'] = False
+        resp = view._validate_spec_data(new, old)
+        assert resp is None, resp.data
+        assert new == {
+            "name": "old survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "$encrypted$foooooooo",  # default remained the same
+                    "max": 1024,
+                    "required": False,  # only thing changed
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "password"
+                }
+            ]
+        }
+
+    def test_use_saved_empty_string_default(self):
+        '''
+        Save is allowed, the $encrypted$ replacement is done with empty string
+        The empty string value for default is unencrypted,
+        unlike all other password questions
+        '''
+        view = JobTemplateSurveySpec()
+        old = {
+            "name": "old survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "",
+                    "max": 1024,
+                    "required": True,
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "password"
+                }
+            ]
+        }
+        new = deepcopy(old)
+        new['spec'][0]['default'] = '$encrypted$'
+        resp = view._validate_spec_data(new, old)
+        assert resp is None
+        assert new == {
+            "name": "old survey",
+            "description": "foobar",
+            "spec": [
+                {
+                    "question_description": "",
+                    "min": 0,
+                    "default": "",  # still has old unencrypted default
+                    "max": 1024,
+                    "required": True,
+                    "choices": "",
+                    "variable": "openshift_username",
+                    "question_name": "OpenShift Username",
+                    "type": "password"
+                }
+            ]
+        }
+
+
+    @staticmethod
+    def spec_from_element(survey_item):
+        survey_item.setdefault('name', 'foo')
+        survey_item.setdefault('variable', 'foo')
+        survey_item.setdefault('required', False)
+        survey_item.setdefault('question_name', 'foo')
+        survey_item.setdefault('type', 'text')
+        spec = {
+            'name': 'test survey',
+            'description': 'foo',
+            'spec': [survey_item]
+        }
+        return spec
+
+
+    @pytest.mark.parametrize("survey_item, error_text", [
+        ({'type': 'password', 'default': ['some', 'invalid', 'list']}, 'expected to be string'),
+        ({'type': 'password', 'default': False}, 'expected to be string'),
+        ({'type': 'integer', 'default': 'foo'}, 'expected to be int'),
+        ({'type': 'integer', 'default': u'🐉'}, 'expected to be int'),
+        ({'type': 'foo'}, 'allowed question types'),
+        ({'type': u'🐉'}, 'allowed question types'),
+        ({'type': 'multiplechoice'}, 'multiplechoice must specify choices'),
+        ({'type': 'integer', 'min': 'foo'}, 'min limit in survey question 0 expected to be integer'),
+        ({'question_name': 42}, "'question_name' in survey question 0 expected to be string.")
+    ])
+    def test_survey_question_element_validation(self, survey_item, error_text):
+        spec = self.spec_from_element(survey_item)
+        r = JobTemplateSurveySpec._validate_spec_data(spec, {})
+        assert r is not None, (spec, error_text)
+        assert 'error' in r.data
+        assert error_text in r.data['error']
+
+
+    def test_survey_spec_non_dict_error(self):
+        spec = self.spec_from_element({})
+        spec['spec'][0] = 'foo'
+        r = JobTemplateSurveySpec._validate_spec_data(spec, {})
+        assert 'Survey question 0 is not a json object' in r.data['error']
+
+
+    def test_survey_spec_dual_names_error(self):
+        spec = self.spec_from_element({})
+        spec['spec'].append(spec['spec'][0].copy())
+        r = JobTemplateSurveySpec._validate_spec_data(spec, {})
+        assert "'variable' 'foo' duplicated in survey question 1." in r.data['error']
+
+
+    def test_survey_spec_element_missing_property(self):
+        spec = self.spec_from_element({})
+        spec['spec'][0].pop('type')
+        r = JobTemplateSurveySpec._validate_spec_data(spec, {})
+        assert "'type' missing from survey question 0" in r.data['error']

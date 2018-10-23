@@ -38,6 +38,10 @@ function AtFormController (eventService, strings) {
         component.category = category;
         component.form = vm.state;
 
+        if (category === 'input') {
+            scope.state[component.state.id] = component.state;
+        }
+
         vm.components.push(component);
     };
 
@@ -68,11 +72,13 @@ function AtFormController (eventService, strings) {
         const data = vm.components
             .filter(component => component.category === 'input')
             .reduce((values, component) => {
-                if (!component.state._value) {
+                if (component.state._value === undefined) {
                     return values;
                 }
 
-                if (component.state._key && typeof component.state._value === 'object') {
+                if (component.state._format === 'selectFromOptions') {
+                    values[component.state.id] = component.state._value[0];
+                } else if (component.state._key && typeof component.state._value === 'object') {
                     values[component.state.id] = component.state._value[component.state._key];
                 } else if (component.state._group) {
                     values[component.state._key] = values[component.state._key] || {};
@@ -108,6 +114,12 @@ function AtFormController (eventService, strings) {
 
             if (typeof err.data === 'object') {
                 message = JSON.stringify(err.data);
+            } if (_.has(err, 'data.__all__')) {
+                if (typeof err.data.__all__ === 'object' && Array.isArray(err.data.__all__)) {
+                    message = JSON.stringify(err.data.__all__[0]);
+                } else {
+                    message = JSON.stringify(err.data.__all__);
+                }
             } else {
                 message = err.data;
             }
@@ -189,6 +201,7 @@ function AtFormController (eventService, strings) {
             for (let j = 0; j < vm.components.length; j++) {
                 if (components[i] === vm.components[j].state) {
                     vm.components.splice(j, 1);
+                    delete scope.state[components[i].id];
                     break;
                 }
             }

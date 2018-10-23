@@ -6,16 +6,18 @@
 
 export default ['$scope', 'Rest', 'TeamList', 'Prompt',
     'ProcessErrors', 'GetBasePath', 'Wait', '$state', '$filter',
-    'rbacUiControlService', 'Dataset',
+    'rbacUiControlService', 'Dataset', 'resolvedModels', 'i18n',
     function($scope, Rest, TeamList, Prompt, ProcessErrors,
-    GetBasePath, Wait, $state, $filter, rbacUiControlService, Dataset) {
+    GetBasePath, Wait, $state, $filter, rbacUiControlService, Dataset, models, i18n) {
 
+        const { me } = models;
         var list = TeamList,
             defaultUrl = GetBasePath('teams');
 
         init();
 
         function init() {
+            $scope.canEdit = me.get('summary_fields.user_capabilities.edit');
             $scope.canAdd = false;
 
             rbacUiControlService.canAdd('teams')
@@ -26,9 +28,6 @@ export default ['$scope', 'Rest', 'TeamList', 'Prompt',
             $scope.list = list;
             $scope[`${list.iterator}_dataset`] = Dataset.data;
             $scope[list.name] = $scope[`${list.iterator}_dataset`].results;
-            _.forEach($scope[list.name], (team) => {
-                team.organization_name = team.summary_fields.organization.name;
-            });
 
             $scope.selected = [];
         }
@@ -48,13 +47,13 @@ export default ['$scope', 'Rest', 'TeamList', 'Prompt',
                 var url = defaultUrl + id + '/';
                 Rest.setUrl(url);
                 Rest.destroy()
-                    .success(function() {
+                    .then(() => {
                         Wait('stop');
                         $('#prompt-modal').modal('hide');
 
                         let reloadListStateParams = null;
 
-                        if($scope.teams.length === 1 && $state.params.team_search && !_.isEmpty($state.params.team_search.page) && $state.params.team_search.page !== '1') {
+                        if($scope.teams.length === 1 && $state.params.team_search && _.has($state, 'params.team_search.page') && $state.params.team_search.page !== '1') {
                             reloadListStateParams = _.cloneDeep($state.params);
                             reloadListStateParams.team_search.page = (parseInt(reloadListStateParams.team_search.page)-1).toString();
                         }
@@ -65,7 +64,7 @@ export default ['$scope', 'Rest', 'TeamList', 'Prompt',
                             $state.go('.', reloadListStateParams, { reload: true });
                         }
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         Wait('stop');
                         $('#prompt-modal').modal('hide');
                         ProcessErrors($scope, data, status, null, {
@@ -77,7 +76,8 @@ export default ['$scope', 'Rest', 'TeamList', 'Prompt',
 
             Prompt({
                 hdr: 'Delete',
-                body: '<div class="Prompt-bodyQuery">Are you sure you want to delete the team below?</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(name) + '</div>',
+                resourceName: $filter('sanitize')(name),
+                body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete this team?') + '</div>',
                 action: action,
                 actionText: 'DELETE'
             });

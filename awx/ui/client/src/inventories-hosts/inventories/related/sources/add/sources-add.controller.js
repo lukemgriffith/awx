@@ -9,24 +9,83 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
     'GetChoices', 'GetBasePath', 'CreateSelect2', 'GetSourceTypeOptions',
     'rbacUiControlService', 'ToJSON', 'SourcesService', 'Empty',
     'Wait', 'Rest', 'Alert', 'ProcessErrors', 'inventorySourcesOptions',
-    '$rootScope', 'i18n',
+    '$rootScope', 'i18n', 'InventorySourceModel', 'InventoryHostsStrings',
     function($state, $stateParams, $scope, SourcesFormDefinition,  ParseTypeChange,
         GenerateForm, inventoryData, GroupsService, GetChoices,
         GetBasePath, CreateSelect2, GetSourceTypeOptions, rbacUiControlService,
         ToJSON, SourcesService, Empty, Wait, Rest, Alert, ProcessErrors,
-        inventorySourcesOptions,$rootScope, i18n) {
+        inventorySourcesOptions,$rootScope, i18n, InventorySource, InventoryHostsStrings) {
 
         let form = SourcesFormDefinition;
-        init();
+        $scope.mode = 'add';
+        // apply form definition's default field values
+        GenerateForm.applyDefaults(form, $scope, true);
+        $scope.canAdd = inventorySourcesOptions.actions.POST;
+        $scope.envParseType = 'yaml';
 
-        function init() {
-            $scope.mode = 'add';
-            // apply form definition's default field values
-            GenerateForm.applyDefaults(form, $scope, true);
-            $scope.canAdd = inventorySourcesOptions.actions.POST;
-            $scope.envParseType = 'yaml';
-            initSources();
-        }
+        GetChoices({
+            scope: $scope,
+            field: 'source_regions',
+            variable: 'rax_regions',
+            choice_name: 'rax_region_choices',
+            options: inventorySourcesOptions
+        });
+
+        GetChoices({
+            scope: $scope,
+            field: 'source_regions',
+            variable: 'ec2_regions',
+            choice_name: 'ec2_region_choices',
+            options: inventorySourcesOptions
+        });
+
+        GetChoices({
+            scope: $scope,
+            field: 'source_regions',
+            variable: 'gce_regions',
+            choice_name: 'gce_region_choices',
+            options: inventorySourcesOptions
+        });
+
+        GetChoices({
+            scope: $scope,
+            field: 'source_regions',
+            variable: 'azure_regions',
+            choice_name: 'azure_rm_region_choices',
+            options: inventorySourcesOptions
+        });
+
+        // Load options for group_by
+        GetChoices({
+            scope: $scope,
+            field: 'group_by',
+            variable: 'ec2_group_by',
+            choice_name: 'ec2_group_by_choices',
+            options: inventorySourcesOptions
+        });
+
+        initRegionSelect();
+
+        GetChoices({
+            scope: $scope,
+            field: 'verbosity',
+            variable: 'verbosity_options',
+            options: inventorySourcesOptions
+        });
+
+        CreateSelect2({
+            element: '#inventory_source_verbosity',
+            multiple: false
+        });
+
+        $scope.verbosity = $scope.verbosity_options[1];
+
+        GetSourceTypeOptions({
+            scope: $scope,
+            variable: 'source_type_options'
+        });
+
+        const inventorySource = new InventorySource();
 
         var getInventoryFiles = function (project) {
             var url;
@@ -36,13 +95,20 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
                 Wait('start');
                 Rest.setUrl(url);
                 Rest.get()
-                    .success(function (data) {
+                    .then(({data}) => {
                         $scope.inventory_files = data;
                         $scope.inventory_files.push("/ (project root)");
-                        sync_inventory_file_select2();
+                        CreateSelect2({
+                            element:'#inventory-file-select',
+                            addNew: true,
+                            multiple: false,
+                            scope: $scope,
+                            options: 'inventory_files',
+                            model: 'inventory_file'
+                        });
                         Wait('stop');
                     })
-                    .error(function () {
+                    .catch(() => {
                         Alert('Cannot get inventory files', 'Unable to retrieve the list of inventory files for this project.', 'alert-info');
                         Wait('stop');
                     });
@@ -58,17 +124,6 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
                 getInventoryFiles(newValue);
             }
         });
-
-        function sync_inventory_file_select2() {
-            CreateSelect2({
-                element:'#inventory-file-select',
-                addNew: true,
-                multiple: false,
-                scope: $scope,
-                options: 'inventory_files',
-                model: 'inventory_file'
-            });
-        }
 
         $scope.lookupCredential = function(){
             if($scope.source.value !== "scm" && $scope.source.value !== "custom") {
@@ -109,7 +164,7 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
             else{
                 $scope.credentialBasePath = (source === 'ec2') ? GetBasePath('credentials') + '?kind=aws' : GetBasePath('credentials') + (source === '' ? '' : '?kind=' + (source));
             }
-            if (source === 'ec2' || source === 'custom' || source === 'vmware' || source === 'openstack' || source === 'scm' || source === 'cloudforms' || source === "satellite6") {
+            if (source === 'ec2' || source === 'custom' || source === 'vmware' || source === 'openstack' || source === 'scm' || source === 'cloudforms' || source === "satellite6" || source === "azure_rm") {
                 $scope.envParseType = 'yaml';
 
                 var varName;
@@ -151,7 +206,10 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
         // region / source options callback
 
         $scope.$on('sourceTypeOptionsReady', function() {
-            initSourceSelect();
+            CreateSelect2({
+                element: '#inventory_source_source',
+                multiple: false
+            });
         });
 
         function initRegionSelect(){
@@ -160,10 +218,6 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
                 multiple: true
             });
 
-            initGroupBySelect();
-        }
-
-        function initGroupBySelect(){
             let add_new = false;
             if( _.get($scope, 'source') === 'ec2' || _.get($scope.source, 'value') === 'ec2') {
                 $scope.group_by_choices = $scope.ec2_group_by;
@@ -198,86 +252,14 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
                 $scope.group_by = $scope.group_by_choices;
                 $scope.groupByPopOver = i18n._("Specify which groups to create automatically. Group names will be created similar to the options selected. If blank, all groups above are created. Refer to Ansible Tower documentation for more detail.");
                 $scope.instanceFilterPopOver = i18n._("Provide a comma-separated list of filter expressions. Hosts are imported when all of the filters match. Refer to Ansible Tower documentation for more detail.");
-                }
+            }
+            if( _.get($scope, 'source') === 'tower' || _.get($scope.source, 'value') === 'tower') {
+                $scope.instanceFilterPopOver = i18n._("Provide the named URL encoded name or id of the remote Tower inventory to be imported.");
+            }
             CreateSelect2({
                 element: '#inventory_source_group_by',
                 multiple: true,
                 addNew: add_new
-            });
-        }
-
-        function initSourceSelect(){
-            CreateSelect2({
-                element: '#inventory_source_source',
-                multiple: false
-            });
-        }
-
-        function initVerbositySelect(){
-            CreateSelect2({
-                element: '#inventory_source_verbosity',
-                multiple: false
-            });
-
-            $scope.verbosity = $scope.verbosity_options[1];
-        }
-
-        function initSources(){
-            GetChoices({
-                scope: $scope,
-                field: 'source_regions',
-                variable: 'rax_regions',
-                choice_name: 'rax_region_choices',
-                options: inventorySourcesOptions
-            });
-
-            GetChoices({
-                scope: $scope,
-                field: 'source_regions',
-                variable: 'ec2_regions',
-                choice_name: 'ec2_region_choices',
-                options: inventorySourcesOptions
-            });
-
-            GetChoices({
-                scope: $scope,
-                field: 'source_regions',
-                variable: 'gce_regions',
-                choice_name: 'gce_region_choices',
-                options: inventorySourcesOptions
-            });
-
-            GetChoices({
-                scope: $scope,
-                field: 'source_regions',
-                variable: 'azure_regions',
-                choice_name: 'azure_rm_region_choices',
-                options: inventorySourcesOptions
-            });
-
-            // Load options for group_by
-            GetChoices({
-                scope: $scope,
-                field: 'group_by',
-                variable: 'ec2_group_by',
-                choice_name: 'ec2_group_by_choices',
-                options: inventorySourcesOptions
-            });
-
-            initRegionSelect();
-
-            GetChoices({
-                scope: $scope,
-                field: 'verbosity',
-                variable: 'verbosity_options',
-                options: inventorySourcesOptions
-            });
-
-            initVerbositySelect();
-
-            GetSourceTypeOptions({
-                scope: $scope,
-                variable: 'source_type_options'
             });
         }
 
@@ -322,9 +304,17 @@ export default ['$state', '$stateParams', '$scope', 'SourcesFormDefinition',
             } else {
                 params.source = null;
             }
-            SourcesService.post(params).then(function(res){
-                let inventory_source_id = res.data.id;
+
+            inventorySource.request('post', {
+                data: params
+            }).then((response) => {
+                let inventory_source_id = response.data.id;
                 $state.go('^.edit', {inventory_source_id: inventory_source_id}, {reload: true});
+            }).catch(({ data, status, config }) => {
+                ProcessErrors($scope, data, status, null, {
+                    hdr: 'Error!',
+                    msg: InventoryHostsStrings.get('error.CALL', { path: `${config.url}`, status })
+                });
             });
         };
     }

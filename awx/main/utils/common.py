@@ -18,14 +18,21 @@ import contextlib
 import tempfile
 import six
 import psutil
+from functools import reduce
+from StringIO import StringIO
+
+from decimal import Decimal
 
 # Decorator
 from decorator import decorator
 
 # Django
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import DatabaseError
 from django.utils.translation import ugettext_lazy as _
 from django.db.models.fields.related import ForeignObjectRel, ManyToManyField
+from django.db.models.query import QuerySet
+from django.db.models import Q
 
 # Django REST Framework
 from rest_framework.exceptions import ParseError, PermissionDenied
@@ -37,15 +44,15 @@ logger = logging.getLogger('awx.main.utils')
 
 __all__ = ['get_object_or_400', 'get_object_or_403', 'camelcase_to_underscore', 'memoize', 'memoize_delete',
            'get_ansible_version', 'get_ssh_version', 'get_licenser', 'get_awx_version', 'update_scm_url',
-           'get_type_for_model', 'get_model_for_type', 'copy_model_by_class',
-           'copy_m2m_relationships' ,'cache_list_capabilities', 'to_python_boolean',
+           'get_type_for_model', 'get_model_for_type', 'copy_model_by_class', 'region_sorting',
+           'copy_m2m_relationships', 'prefetch_page_capabilities', 'to_python_boolean',
            'ignore_inventory_computed_fields', 'ignore_inventory_group_removal',
-           '_inventory_updates', 'get_pk_from_dict', 'getattrd', 'NoDefaultProvided',
-           'get_current_apps', 'set_current_apps', 'OutputEventFilter',
-           'extract_ansible_vars', 'get_search_fields', 'get_system_task_capacity',
+           '_inventory_updates', 'get_pk_from_dict', 'getattrd', 'getattr_dne', 'NoDefaultProvided',
+           'get_current_apps', 'set_current_apps', 'OutputEventFilter', 'OutputVerboseFilter',
+           'extract_ansible_vars', 'get_search_fields', 'get_system_task_capacity', 'get_cpu_capacity', 'get_mem_capacity',
            'wrap_args_with_proot', 'build_proot_temp_dir', 'check_proot_installed', 'model_to_dict',
            'model_instance_diff', 'timestamp_apiformat', 'parse_yaml_or_json', 'RequireDebugTrueOrTest',
-           'has_model_field_prefetched', 'set_environ', 'IllegalArgumentError',]
+           'has_model_field_prefetched', 'set_environ', 'IllegalArgumentError', 'get_custom_venv_choices', 'get_external_account']
 
 
 def get_object_or_400(klass, *args, **kwargs):
@@ -79,7 +86,7 @@ def get_object_or_403(klass, *args, **kwargs):
 
 
 def to_python_boolean(value, allow_none=False):
-    value = unicode(value)
+    value = six.text_type(value)
     if value.lower() in ('true', '1', 't'):
         return True
     elif value.lower() in ('false', '0', 'f'):
@@ -87,7 +94,15 @@ def to_python_boolean(value, allow_none=False):
     elif allow_none and value.lower() in ('none', 'null'):
         return None
     else:
-        raise ValueError(_(u'Unable to convert "%s" to boolean') % unicode(value))
+        raise ValueError(_(u'Unable to convert "%s" to boolean') % six.text_type(value))
+
+
+def region_sorting(region):
+        if region[1].lower() == 'all':
+            return -1
+        elif region[1].lower().startswith('us'):
+            return 0
+        return region[1]
 
 
 def camelcase_to_underscore(s):
@@ -112,12 +127,16 @@ class IllegalArgumentError(ValueError):
     pass
 
 
+def get_memoize_cache():
+    from django.core.cache import cache
+    return cache
+
+
 def memoize(ttl=60, cache_key=None, track_function=False):
     '''
     Decorator to wrap a function and cache its result.
     '''
-    from django.core.cache import cache
-
+    cache = get_memoize_cache()
 
     def _memoizer(f, *args, **kwargs):
         if cache_key and track_function:
@@ -145,8 +164,7 @@ def memoize(ttl=60, cache_key=None, track_function=False):
 
 
 def memoize_delete(function_name):
-    from django.core.cache import cache
-
+    cache = get_memoize_cache()
     return cache.delete(function_name)
 
 
@@ -160,7 +178,7 @@ def get_ansible_version():
                                 stdout=subprocess.PIPE)
         result = proc.communicate()[0]
         return result.split('\n')[0].replace('ansible', '').strip()
-    except:
+    except Exception:
         return 'unknown'
 
 
@@ -174,7 +192,7 @@ def get_ssh_version():
                                 stderr=subprocess.PIPE)
         result = proc.communicate()[1]
         return result.split(" ")[0].split("_")[1]
-    except:
+    except Exception:
         return 'unknown'
 
 
@@ -186,7 +204,7 @@ def get_awx_version():
     try:
         import pkg_resources
         return pkg_resources.require('awx')[0].version
-    except:
+    except Exception:
         return __version__
 
 
@@ -320,7 +338,7 @@ def update_scm_url(scm_type, url, username=True, password=True,
         netloc = u''
     netloc = u'@'.join(filter(None, [netloc, parts.hostname]))
     if parts.port:
-        netloc = u':'.join([netloc, unicode(parts.port)])
+        netloc = u':'.join([netloc, six.text_type(parts.port)])
     new_url = urlparse.urlunsplit([parts.scheme, netloc, parts.path,
                                    parts.query, parts.fragment])
     if scp_format and parts.scheme == 'git+ssh':
@@ -329,7 +347,6 @@ def update_scm_url(scm_type, url, username=True, password=True,
 
 
 def get_allowed_fields(obj, serializer_mapping):
-    from django.contrib.auth.models import User
 
     if serializer_mapping is not None and obj.__class__ in serializer_mapping:
         serializer_actual = serializer_mapping[obj.__class__]()
@@ -337,10 +354,14 @@ def get_allowed_fields(obj, serializer_mapping):
     else:
         allowed_fields = [x.name for x in obj._meta.fields]
 
-    if isinstance(obj, User):
-        field_blacklist = ['last_login']
+    ACTIVITY_STREAM_FIELD_EXCLUSIONS = {
+        'user': ['last_login'],
+        'oauth2accesstoken': ['last_used'],
+        'oauth2application': ['client_secret']
+    }
+    field_blacklist = ACTIVITY_STREAM_FIELD_EXCLUSIONS.get(obj._meta.model_name, [])
+    if field_blacklist:
         allowed_fields = [f for f in allowed_fields if f not in field_blacklist]
-
     return allowed_fields
 
 
@@ -365,7 +386,7 @@ def _convert_model_field_for_display(obj, field_name, password_fields=None):
             field_val = json.dumps(field_val, ensure_ascii=False)
         except Exception:
             pass
-    if type(field_val) not in (bool, int, type(None)):
+    if type(field_val) not in (bool, int, type(None), long):
         field_val = smart_str(field_val)
     return field_val
 
@@ -398,10 +419,8 @@ def model_instance_diff(old, new, serializer_mapping=None):
                 _convert_model_field_for_display(old, field, password_fields=old_password_fields),
                 _convert_model_field_for_display(new, field, password_fields=new_password_fields),
             )
-
     if len(diff) == 0:
         diff = None
-
     return diff
 
 
@@ -420,7 +439,6 @@ def model_to_dict(obj, serializer_mapping=None):
         if field.name not in allowed_fields:
             continue
         attr_d[field.name] = _convert_model_field_for_display(obj, field.name, password_fields=password_fields)
-
     return attr_d
 
 
@@ -449,7 +467,7 @@ def copy_model_by_class(obj1, Class2, fields, kwargs):
             elif not isinstance(Class2._meta.get_field(field_name), (ForeignObjectRel, ManyToManyField)):
                 create_kwargs[field_name] = kwargs[field_name]
         elif hasattr(obj1, field_name):
-            field_obj = obj1._meta.get_field_by_name(field_name)[0]
+            field_obj = obj1._meta.get_field(field_name)
             if not isinstance(field_obj, ManyToManyField):
                 create_kwargs[field_name] = getattr(obj1, field_name)
 
@@ -470,13 +488,13 @@ def copy_m2m_relationships(obj1, obj2, fields, kwargs=None):
     '''
     for field_name in fields:
         if hasattr(obj1, field_name):
-            field_obj = obj1._meta.get_field_by_name(field_name)[0]
+            field_obj = obj1._meta.get_field(field_name)
             if isinstance(field_obj, ManyToManyField):
                 # Many to Many can be specified as field_name
                 src_field_value = getattr(obj1, field_name)
                 if kwargs and field_name in kwargs:
                     override_field_val = kwargs[field_name]
-                    if isinstance(override_field_val, list):
+                    if isinstance(override_field_val, (set, list, QuerySet)):
                         getattr(obj2, field_name).add(*override_field_val)
                         continue
                     if override_field_val.__class__.__name__ is 'ManyRelatedManager':
@@ -497,7 +515,6 @@ def get_model_for_type(type):
     '''
     Return model class for a given type name.
     '''
-    from django.db.models import Q
     from django.contrib.contenttypes.models import ContentType
     for ct in ContentType.objects.filter(Q(app_label='main') | Q(app_label='auth', model='user')):
         ct_model = ct.model_class()
@@ -506,32 +523,35 @@ def get_model_for_type(type):
         ct_type = get_type_for_model(ct_model)
         if type == ct_type:
             return ct_model
+    else:
+        raise DatabaseError('"{}" is not a valid AWX model.'.format(type))
 
 
-def cache_list_capabilities(page, prefetch_list, model, user):
+def prefetch_page_capabilities(model, page, prefetch_list, user):
     '''
-    Given a `page` list of objects, the specified roles for the specified user
-    are save on each object in the list, using 1 query for each role type
+    Given a `page` list of objects, a nested dictionary of user_capabilities
+    are returned by id, ex.
+    {
+        4: {'edit': True, 'start': True},
+        6: {'edit': False, 'start': False}
+    }
+    Each capability is produced for all items in the page in a single query
 
-    Examples:
-    capabilities_prefetch = ['admin', 'execute']
+    Examples of prefetch language:
+    prefetch_list = ['admin', 'execute']
       --> prefetch the admin (edit) and execute (start) permissions for
           items in list for current user
-    capabilities_prefetch = ['inventory.admin']
+    prefetch_list = ['inventory.admin']
       --> prefetch the related inventory FK permissions for current user,
           and put it into the object's cache
-    capabilities_prefetch = [{'copy': ['inventory.admin', 'project.admin']}]
+    prefetch_list = [{'copy': ['inventory.admin', 'project.admin']}]
       --> prefetch logical combination of admin permission to inventory AND
           project, put into cache dictionary as "copy"
     '''
-    from django.db.models import Q
     page_ids = [obj.id for obj in page]
+    mapping = {}
     for obj in page:
-        obj.capabilities_cache = {}
-
-    skip_models = []
-    if hasattr(model, 'invalid_user_capabilities_prefetch_models'):
-        skip_models = model.invalid_user_capabilities_prefetch_models()
+        mapping[obj.id] = {}
 
     for prefetch_entry in prefetch_list:
 
@@ -575,11 +595,9 @@ def cache_list_capabilities(page, prefetch_list, model, user):
 
         # Save data item-by-item
         for obj in page:
-            if skip_models and obj.__class__.__name__.lower() in skip_models:
-                continue
-            obj.capabilities_cache[display_method] = False
-            if obj.pk in ids_with_role:
-                obj.capabilities_cache[display_method] = True
+            mapping[obj.pk][display_method] = bool(obj.pk in ids_with_role)
+
+    return mapping
 
 
 def validate_vars_type(vars_obj):
@@ -604,7 +622,7 @@ def parse_yaml_or_json(vars_str, silent_failure=True):
     '''
     if isinstance(vars_str, dict):
         return vars_str
-    elif isinstance(vars_str, basestring) and vars_str == '""':
+    elif isinstance(vars_str, six.string_types) and vars_str == '""':
         return {}
 
     try:
@@ -615,8 +633,16 @@ def parse_yaml_or_json(vars_str, silent_failure=True):
             vars_dict = yaml.safe_load(vars_str)
             # Can be None if '---'
             if vars_dict is None:
-                return {}
+                vars_dict = {}
             validate_vars_type(vars_dict)
+            if not silent_failure:
+                # is valid YAML, check that it is compatible with JSON
+                try:
+                    json.dumps(vars_dict)
+                except (ValueError, TypeError, AssertionError) as json_err2:
+                    raise ParseError(_(
+                        'Variables not compatible with JSON standard (error: {json_error})').format(
+                            json_error=str(json_err2)))
         except (yaml.YAMLError, TypeError, AttributeError, AssertionError) as yaml_err:
             if silent_failure:
                 return {}
@@ -627,19 +653,76 @@ def parse_yaml_or_json(vars_str, silent_failure=True):
     return vars_dict
 
 
-@memoize()
-def get_system_task_capacity():
+def get_cpu_capacity():
+    from django.conf import settings
+    settings_forkcpu = getattr(settings, 'SYSTEM_TASK_FORKS_CPU', None)
+    env_forkcpu = os.getenv('SYSTEM_TASK_FORKS_CPU', None)
+
+    settings_abscpu = getattr(settings, 'SYSTEM_TASK_ABS_CPU', None)
+    env_abscpu = os.getenv('SYSTEM_TASK_ABS_CPU', None)
+
+    if env_abscpu is not None:
+        return 0, int(env_abscpu)
+    elif settings_abscpu is not None:
+        return 0, int(settings_abscpu)
+
+    cpu = psutil.cpu_count()
+
+    if env_forkcpu:
+        forkcpu = int(env_forkcpu)
+    elif settings_forkcpu:
+        forkcpu = int(settings_forkcpu)
+    else:
+        forkcpu = 4
+    return (cpu, cpu * forkcpu)
+
+
+def get_mem_capacity():
+    from django.conf import settings
+    settings_forkmem = getattr(settings, 'SYSTEM_TASK_FORKS_MEM', None)
+    env_forkmem = os.getenv('SYSTEM_TASK_FORKS_MEM', None)
+
+    settings_absmem = getattr(settings, 'SYSTEM_TASK_ABS_MEM', None)
+    env_absmem = os.getenv('SYSTEM_TASK_ABS_MEM', None)
+
+    if env_absmem is not None:
+        return 0, int(env_absmem)
+    elif settings_absmem is not None:
+        return 0, int(settings_absmem)
+
+    if env_forkmem:
+        forkmem = int(env_forkmem)
+    elif settings_forkmem:
+        forkmem = int(settings_forkmem)
+    else:
+        forkmem = 100
+
+    mem = psutil.virtual_memory().total
+    return (mem, max(1, ((mem / 1024 / 1024) - 2048) / forkmem))
+
+
+def get_system_task_capacity(scale=Decimal(1.0), cpu_capacity=None, mem_capacity=None):
     '''
     Measure system memory and use it as a baseline for determining the system's capacity
     '''
     from django.conf import settings
-    if hasattr(settings, 'SYSTEM_TASK_CAPACITY'):
-        return settings.SYSTEM_TASK_CAPACITY
-    mem = psutil.virtual_memory()
-    total_mem_value = mem.total / 1024 / 1024
-    if total_mem_value <= 2048:
-        return 50
-    return 50 + ((total_mem_value / 1024) - 2) * 75
+    settings_forks = getattr(settings, 'SYSTEM_TASK_FORKS_CAPACITY', None)
+    env_forks = os.getenv('SYSTEM_TASK_FORKS_CAPACITY', None)
+
+    if env_forks:
+        return int(env_forks)
+    elif settings_forks:
+        return int(settings_forks)
+
+    if cpu_capacity is None:
+        _, cpu_cap = get_cpu_capacity()
+    else:
+        cpu_cap = cpu_capacity
+    if mem_capacity is None:
+        _, mem_cap = get_mem_capacity()
+    else:
+        mem_cap = mem_capacity
+    return min(mem_cap, cpu_cap) + ((max(mem_cap, cpu_cap) - min(mem_cap, cpu_cap)) * scale)
 
 
 _inventory_updates = threading.local()
@@ -700,7 +783,9 @@ def check_proot_installed():
                                 stderr=subprocess.PIPE)
         proc.communicate()
         return bool(proc.returncode == 0)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        if isinstance(e, ValueError) or getattr(e, 'errno', 1) != 2:  # ENOENT, no such file or directory
+            logger.exception('bwrap unavailable for unexpected reason.')
         return False
 
 
@@ -725,7 +810,8 @@ def wrap_args_with_proot(args, cwd, **kwargs):
      - /var/log/supervisor
     '''
     from django.conf import settings
-    new_args = [getattr(settings, 'AWX_PROOT_CMD', 'bwrap'), '--unshare-pid', '--dev-bind', '/', '/']
+    cwd = os.path.realpath(cwd)
+    new_args = [getattr(settings, 'AWX_PROOT_CMD', 'bwrap'), '--unshare-pid', '--dev-bind', '/', '/', '--proc', '/proc']
     hide_paths = [settings.AWX_PROOT_BASE_PATH]
     if not kwargs.get('isolated'):
         hide_paths.extend(['/etc/tower', '/var/lib/awx', '/var/log',
@@ -751,9 +837,11 @@ def wrap_args_with_proot(args, cwd, **kwargs):
         show_paths = [cwd]
     for venv in (
         settings.ANSIBLE_VENV_PATH,
-        settings.AWX_VENV_PATH
+        settings.AWX_VENV_PATH,
+        kwargs.get('proot_custom_virtualenv')
     ):
-        new_args.extend(['--ro-bind', venv, venv])
+        if venv:
+            new_args.extend(['--ro-bind', venv, venv])
     show_paths.extend(getattr(settings, 'AWX_PROOT_SHOW_PATHS', None) or [])
     show_paths.extend(kwargs.get('proot_show_paths', []))
     for path in sorted(set(show_paths)):
@@ -820,6 +908,13 @@ def getattrd(obj, name, default=NoDefaultProvided):
         raise
 
 
+def getattr_dne(obj, name, notfound=ObjectDoesNotExist):
+    try:
+        return getattr(obj, name)
+    except notfound:
+        return None
+
+
 current_apps = apps
 
 
@@ -833,6 +928,21 @@ def get_current_apps():
     return current_apps
 
 
+def get_custom_venv_choices():
+    from django.conf import settings
+    custom_venv_path = settings.BASE_VENV_PATH
+    if os.path.exists(custom_venv_path):
+        return [
+            os.path.join(custom_venv_path, x.decode('utf-8'), '')
+            for x in os.listdir(custom_venv_path)
+            if x != 'awx' and
+            os.path.isdir(os.path.join(custom_venv_path, x)) and
+            os.path.exists(os.path.join(custom_venv_path, x, 'bin', 'activate'))
+        ]
+    else:
+        return []
+
+
 class OutputEventFilter(object):
     '''
     File-like object that looks for encoded job events in stdout data.
@@ -840,26 +950,35 @@ class OutputEventFilter(object):
 
     EVENT_DATA_RE = re.compile(r'\x1b\[K((?:[A-Za-z0-9+/=]+\x1b\[\d+D)+)\x1b\[K')
 
-    def __init__(self, fileobj=None, event_callback=None, raw_callback=None):
-        self._fileobj = fileobj
+    def __init__(self, event_callback):
         self._event_callback = event_callback
-        self._raw_callback = raw_callback
-        self._counter = 1
+        self._counter = 0
         self._start_line = 0
-        self._buffer = ''
+        self._buffer = StringIO()
+        self._last_chunk = ''
         self._current_event_data = None
 
-    def __getattr__(self, attr):
-        return getattr(self._fileobj, attr)
+    def flush(self):
+        # pexpect wants to flush the file it writes to, but we're not
+        # actually capturing stdout to a raw file; we're just
+        # implementing a custom `write` method to discover and emit events from
+        # the stdout stream
+        pass
 
     def write(self, data):
-        if self._fileobj:
-            self._fileobj.write(data)
-        self._buffer += data
-        if self._raw_callback:
-            self._raw_callback(data)
-        while True:
-            match = self.EVENT_DATA_RE.search(self._buffer)
+        self._buffer.write(data)
+
+        # keep a sliding window of the last chunk written so we can detect
+        # event tokens and determine if we need to perform a search of the full
+        # buffer
+        should_search = '\x1b[K' in (self._last_chunk + data)
+        self._last_chunk = data
+
+        # Only bother searching the buffer if we recently saw a start/end
+        # token (\x1b[K)
+        while should_search:
+            value = self._buffer.getvalue()
+            match = self.EVENT_DATA_RE.search(value)
             if not match:
                 break
             try:
@@ -867,17 +986,21 @@ class OutputEventFilter(object):
                 event_data = json.loads(base64.b64decode(base64_data))
             except ValueError:
                 event_data = {}
-            self._emit_event(self._buffer[:match.start()], event_data)
-            self._buffer = self._buffer[match.end():]
+            self._emit_event(value[:match.start()], event_data)
+            remainder = value[match.end():]
+            self._buffer = StringIO()
+            self._buffer.write(remainder)
+            self._last_chunk = remainder
 
     def close(self):
-        if self._fileobj:
-            self._fileobj.close()
-        if self._buffer:
-            self._emit_event(self._buffer)
-            self._buffer = ''
+        value = self._buffer.getvalue()
+        if value:
+            self._emit_event(value)
+            self._buffer = StringIO()
+        self._event_callback(dict(event='EOF', final_counter=self._counter))
 
     def _emit_event(self, buffered_stdout, next_event_data=None):
+        next_event_data = next_event_data or {}
         if self._current_event_data:
             event_data = self._current_event_data
             stdout_chunks = [buffered_stdout]
@@ -888,8 +1011,8 @@ class OutputEventFilter(object):
             stdout_chunks = []
 
         for stdout_chunk in stdout_chunks:
-            event_data['counter'] = self._counter
             self._counter += 1
+            event_data['counter'] = self._counter
             event_data['stdout'] = stdout_chunk[:-2] if len(stdout_chunk) > 2 else ""
             n_lines = stdout_chunk.count('\n')
             event_data['start_line'] = self._start_line
@@ -902,6 +1025,32 @@ class OutputEventFilter(object):
             self._current_event_data = next_event_data
         else:
             self._current_event_data = None
+
+
+class OutputVerboseFilter(OutputEventFilter):
+    '''
+    File-like object that dispatches stdout data.
+    Does not search for encoded job event data.
+    Use for unified job types that do not encode job event data.
+    '''
+    def write(self, data):
+        self._buffer.write(data)
+
+        # if the current chunk contains a line break
+        if data and '\n' in data:
+            # emit events for all complete lines we know about
+            lines = self._buffer.getvalue().splitlines(True)  # keep ends
+            remainder = None
+            # if last line is not a complete line, then exclude it
+            if '\n' not in lines[-1]:
+                remainder = lines.pop()
+            # emit all complete lines
+            for line in lines:
+                self._emit_event(line)
+            self._buffer = StringIO()
+            # put final partial line back on buffer
+            if remainder:
+                self._buffer.write(remainder)
 
 
 def is_ansible_variable(key):
@@ -931,3 +1080,25 @@ def has_model_field_prefetched(model_obj, field_name):
     # NOTE: Update this function if django internal implementation changes.
     return getattr(getattr(model_obj, field_name, None),
                    'prefetch_cache_name', '') in getattr(model_obj, '_prefetched_objects_cache', {})
+
+
+def get_external_account(user):
+    from django.conf import settings
+    from awx.conf.license import feature_enabled
+    account_type = None
+    if getattr(settings, 'AUTH_LDAP_SERVER_URI', None) and feature_enabled('ldap'):
+        try:
+            if user.pk and user.profile.ldap_dn and not user.has_usable_password():
+                account_type = "ldap"
+        except AttributeError:
+            pass
+    if (getattr(settings, 'SOCIAL_AUTH_GOOGLE_OAUTH2_KEY', None) or
+            getattr(settings, 'SOCIAL_AUTH_GITHUB_KEY', None) or
+            getattr(settings, 'SOCIAL_AUTH_GITHUB_ORG_KEY', None) or
+            getattr(settings, 'SOCIAL_AUTH_GITHUB_TEAM_KEY', None) or
+            getattr(settings, 'SOCIAL_AUTH_SAML_ENABLED_IDPS', None)) and user.social_auth.all():
+        account_type = "social"
+    if (getattr(settings, 'RADIUS_SERVER', None) or
+            getattr(settings, 'TACACSPLUS_HOST', None)) and user.enterprise_auth.all():
+        account_type = "enterprise"
+    return account_type

@@ -1,5 +1,4 @@
 import base64
-import cStringIO
 import codecs
 import StringIO
 import json
@@ -15,7 +14,7 @@ from django.conf import settings
 
 import awx
 from awx.main.expect import run
-from awx.main.utils import OutputEventFilter
+from awx.main.utils import OutputEventFilter, get_system_task_capacity
 from awx.main.queue import CallbackQueueDispatcher
 
 logger = logging.getLogger('awx.isolated.manager')
@@ -118,10 +117,10 @@ class IsolatedManager(object):
 
     @classmethod
     def awx_playbook_path(cls):
-        return os.path.join(
+        return os.path.abspath(os.path.join(
             os.path.dirname(awx.__file__),
             'playbooks'
-        )
+        ))
 
     def path_to(self, *args):
         return os.path.join(self.private_data_dir, *args)
@@ -143,7 +142,7 @@ class IsolatedManager(object):
 
         # if an ssh private key fifo exists, read its contents and delete it
         if self.ssh_key_path:
-            buff = cStringIO.StringIO()
+            buff = StringIO.StringIO()
             with open(self.ssh_key_path, 'r') as fifo:
                 for line in fifo:
                     buff.write(line)
@@ -183,7 +182,7 @@ class IsolatedManager(object):
             job_timeout=settings.AWX_ISOLATED_LAUNCH_TIMEOUT,
             pexpect_timeout=5
         )
-        output = buff.getvalue()
+        output = buff.getvalue().encode('utf-8')
         playbook_logger.info('Isolated job {} dispatch:\n{}'.format(self.instance.id, output))
         if status != 'successful':
             self.stdout_handle.write(output)
@@ -283,7 +282,7 @@ class IsolatedManager(object):
         status = 'failed'
         output = ''
         rc = None
-        buff = cStringIO.StringIO()
+        buff = StringIO.StringIO()
         last_check = time.time()
         seek = 0
         job_timeout = remaining = self.job_timeout
@@ -304,7 +303,7 @@ class IsolatedManager(object):
                 time.sleep(1)
                 continue
 
-            buff = cStringIO.StringIO()
+            buff = StringIO.StringIO()
             logger.debug('Checking on isolated job {} with `check_isolated.yml`.'.format(self.instance.id))
             status, rc = IsolatedManager.run_pexpect(
                 args, self.awx_playbook_path(), self.management_env, buff,
@@ -314,12 +313,12 @@ class IsolatedManager(object):
                 pexpect_timeout=5,
                 proot_cmd=self.proot_cmd
             )
-            output = buff.getvalue()
+            output = buff.getvalue().encode('utf-8')
             playbook_logger.info('Isolated job {} check:\n{}'.format(self.instance.id, output))
 
             path = self.path_to('artifacts', 'stdout')
             if os.path.exists(path):
-                with codecs.open(path, 'r', encoding='utf-8') as f:
+                with open(path, 'r') as f:
                     f.seek(seek)
                     for line in f:
                         self.stdout_handle.write(line)
@@ -356,14 +355,14 @@ class IsolatedManager(object):
         }
         args = self._build_args('clean_isolated.yml', '%s,' % self.host, extra_vars)
         logger.debug('Cleaning up job {} on isolated host with `clean_isolated.yml` playbook.'.format(self.instance.id))
-        buff = cStringIO.StringIO()
+        buff = StringIO.StringIO()
         timeout = max(60, 2 * settings.AWX_ISOLATED_CONNECTION_TIMEOUT)
         status, rc = IsolatedManager.run_pexpect(
             args, self.awx_playbook_path(), self.management_env, buff,
             idle_timeout=timeout, job_timeout=timeout,
             pexpect_timeout=5
         )
-        output = buff.getvalue()
+        output = buff.getvalue().encode('utf-8')
         playbook_logger.info('Isolated job {} cleanup:\n{}'.format(self.instance.id, output))
 
         if status != 'successful':
@@ -382,10 +381,14 @@ class IsolatedManager(object):
             logger.error(err_template.format(instance.hostname, instance.version, awx_application_version))
             instance.capacity = 0
         else:
-            if instance.capacity == 0 and task_result['capacity']:
+            if instance.capacity == 0 and task_result['capacity_cpu']:
                 logger.warning('Isolated instance {} has re-joined.'.format(instance.hostname))
-            instance.capacity = int(task_result['capacity'])
-        instance.save(update_fields=['capacity', 'version', 'modified'])
+            instance.cpu_capacity = int(task_result['capacity_cpu'])
+            instance.mem_capacity = int(task_result['capacity_mem'])
+            instance.capacity = get_system_task_capacity(scale=instance.capacity_adjustment,
+                                                         cpu_capacity=int(task_result['capacity_cpu']),
+                                                         mem_capacity=int(task_result['capacity_mem']))
+        instance.save(update_fields=['cpu_capacity', 'mem_capacity', 'capacity', 'version', 'modified'])
 
     @classmethod
     def health_check(cls, instance_qs, awx_application_version):
@@ -406,14 +409,14 @@ class IsolatedManager(object):
         env = cls._base_management_env()
         env['ANSIBLE_STDOUT_CALLBACK'] = 'json'
 
-        buff = cStringIO.StringIO()
+        buff = StringIO.StringIO()
         timeout = max(60, 2 * settings.AWX_ISOLATED_CONNECTION_TIMEOUT)
         status, rc = IsolatedManager.run_pexpect(
             args, cls.awx_playbook_path(), env, buff,
             idle_timeout=timeout, job_timeout=timeout,
             pexpect_timeout=5
         )
-        output = buff.getvalue()
+        output = buff.getvalue().encode('utf-8')
         buff.close()
 
         try:
@@ -429,8 +432,9 @@ class IsolatedManager(object):
                 task_result = result['plays'][0]['tasks'][0]['hosts'][instance.hostname]
             except (KeyError, IndexError):
                 task_result = {}
-            if 'capacity' in task_result:
+            if 'capacity_cpu' in task_result and 'capacity_mem' in task_result:
                 cls.update_capacity(instance, task_result, awx_application_version)
+                logger.debug('Isolated instance {} successful heartbeat'.format(instance.hostname))
             elif instance.capacity == 0:
                 logger.debug('Isolated instance {} previously marked as lost, could not re-join.'.format(
                     instance.hostname))
@@ -445,7 +449,7 @@ class IsolatedManager(object):
                         instance.hostname, instance.modified))
 
     @staticmethod
-    def wrap_stdout_handle(instance, private_data_dir, stdout_handle, event_data_key='job_id'):
+    def get_stdout_handle(instance, private_data_dir, event_data_key='job_id'):
         dispatcher = CallbackQueueDispatcher()
 
         def job_event_callback(event_data):
@@ -463,15 +467,13 @@ class IsolatedManager(object):
                             event_data.get('event', ''), event_data['uuid'], instance.id, event_data))
             dispatcher.dispatch(event_data)
 
-        return OutputEventFilter(stdout_handle, job_event_callback)
+        return OutputEventFilter(job_event_callback)
 
-    def run(self, instance, host, private_data_dir, proot_temp_dir):
+    def run(self, instance, private_data_dir, proot_temp_dir):
         """
         Run a job on an isolated host.
 
         :param instance:         a `model.Job` instance
-        :param host:             the hostname (or IP address) to run the
-                                 isolated job on
         :param private_data_dir: an absolute path on the local file system
                                  where job-specific data should be written
                                  (i.e., `/tmp/ansible_awx_xyz/`)
@@ -483,14 +485,11 @@ class IsolatedManager(object):
         `ansible-playbook` run.
         """
         self.instance = instance
-        self.host = host
+        self.host = instance.execution_node
         self.private_data_dir = private_data_dir
         self.proot_temp_dir = proot_temp_dir
         status, rc = self.dispatch()
         if status == 'successful':
             status, rc = self.check()
-        else:
-            # If dispatch fails, attempt to consume artifacts that *might* exist
-            self.check()
         self.cleanup()
         return status, rc

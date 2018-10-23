@@ -11,7 +11,7 @@ import pagination from './sections/pagination';
 import permissions from './sections/permissions';
 import search from './sections/search';
 
-const details = createFormSection({
+const jtDetails = createFormSection({
     selector: 'form',
     props: {
         formElementSelectors: [
@@ -27,6 +27,25 @@ const details = createFormSection({
         name: 'Name',
         description: 'Description',
         playbook: 'Playbook'
+
+    }
+});
+
+const wfjtDetails = createFormSection({
+    selector: 'form',
+    props: {
+        formElementSelectors: [
+            '#workflow_job_template_form .Form-textInput',
+            '#workflow_job_template_form select.Form-dropDown',
+            '#workflow_job_template_form .Form-textArea',
+            '#workflow_job_template_form input[type="checkbox"]',
+            '#workflow_job_template_form .ui-spinner-input',
+            '#workflow_job_template_form .ScheduleToggle-switch'
+        ]
+    },
+    labels: {
+        name: 'Name',
+        description: 'Description'
 
     }
 });
@@ -54,7 +73,7 @@ module.exports = {
         addJobTemplate: {
             selector: 'div[ui-view="form"]',
             sections: {
-                details
+                jtDetails
             },
             elements: {
                 title: 'div[class^="Form-title"]'
@@ -63,7 +82,7 @@ module.exports = {
         editJobTemplate: {
             selector: 'div[ui-view="form"]',
             sections: {
-                details,
+                jtDetails,
                 permissions
             },
             elements: {
@@ -73,28 +92,30 @@ module.exports = {
         addWorkflowJobTemplate: {
             selector: 'div[ui-view="form"]',
             sections: {
-                details
+                wfjtDetails
             },
             elements: {
-                title: 'div[class^="Form-title"]'
+                title: 'div[class^="Form-title"]',
+                visualizerButton: '#workflow_job_template_workflow_visualizer_btn',
             }
         },
         editWorkflowJobTemplate: {
             selector: 'div[ui-view="form"]',
             sections: {
-                details,
+                wfjtDetails,
                 permissions
             },
             elements: {
-                title: 'div[class^="Form-title"]'
+                title: 'div[class^="Form-title"]',
+                visualizerButton: '#workflow_job_template_workflow_visualizer_btn',
             }
         },
         list: {
-            selector: '.Panel',
+            selector: '.at-Panel',
             elements: {
                 badge: 'span[class~="badge"]',
                 title: 'div[class="List-titleText"]',
-                add: 'button[class~="List-buttonSubmit"]'
+                add: '#button-add'
             },
             sections: {
                 search,
@@ -116,6 +137,10 @@ module.exports = {
         save: 'button[class*="Form-saveButton"]'
     },
     commands: [{
+        load () {
+            this.api.url('data:,'); // https://github.com/nightwatchjs/nightwatch/issues/1724
+            return this.navigate();
+        },
         clickWhenEnabled (selector) {
             this.api.waitForElementVisible(selector);
             this.expect.element(selector).enabled;
@@ -123,7 +148,7 @@ module.exports = {
             return this;
         },
         selectAdd (name) {
-            this.clickWhenEnabled('button span[class="List-dropdownCarat"]');
+            this.clickWhenEnabled('#button-add');
 
             this.api
                 .useXpath()
@@ -226,11 +251,10 @@ module.exports = {
                 .waitForElementVisible('div.spinny')
                 .waitForElementNotVisible('div.spinny')
                 .waitForElementNotPresent('multi-credential-modal tbody tr:nth-child(2)')
-                .waitForElementVisible('multi-credential-modal tbody tr:nth-child(1) input[type="radio"]')
-                .click('multi-credential-modal tbody tr:nth-child(1) input[type="radio"]')
+                .waitForElementVisible('multi-credential-modal tbody tr:nth-child(1) input[type="checkbox"]')
+                .click('multi-credential-modal tbody tr:nth-child(1) input[type="checkbox"]')
                 .click('multi-credential-modal button[class*="save"]')
-                .waitForElementVisible('div.spinny')
-                .waitForElementNotVisible('div.spinny');
+                .pause(1000);
 
             return this;
         },
@@ -256,8 +280,7 @@ module.exports = {
                 .waitForElementVisible('multi-credential-modal tbody tr:nth-child(1) input[type="radio"]')
                 .click('multi-credential-modal tbody tr:nth-child(1) input[type="radio"]')
                 .click('multi-credential-modal button[class*="save"]')
-                .waitForElementVisible('div.spinny')
-                .waitForElementNotVisible('div.spinny');
+                .pause(1000);
 
             return this;
         }

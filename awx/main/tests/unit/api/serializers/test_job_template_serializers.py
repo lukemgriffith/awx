@@ -2,6 +2,8 @@
 import pytest
 import mock
 
+from six.moves import xrange
+
 # AWX
 from awx.api.serializers import (
     JobTemplateSerializer,
@@ -20,7 +22,7 @@ from rest_framework import serializers
 
 
 def mock_JT_resource_data():
-    return ({}, [])
+    return {}
 
 
 @pytest.fixture
@@ -28,7 +30,7 @@ def job_template(mocker):
     mock_jt = mocker.MagicMock(spec=JobTemplate)
     mock_jt.pk = 5
     mock_jt.host_config_key = '9283920492'
-    mock_jt.resource_validation_data = mock_JT_resource_data
+    mock_jt.validation_errors = mock_JT_resource_data
     return mock_jt
 
 
@@ -95,7 +97,6 @@ class TestJobTemplateSerializerGetSummaryFields():
         are put into the serializer user_capabilities"""
 
         jt_obj = job_template_factory('testJT', project='proj1', persisted=False).job_template
-        jt_obj.id = 5
         jt_obj.admin_role = Role(id=9, role_field='admin_role')
         jt_obj.execute_role = Role(id=8, role_field='execute_role')
         jt_obj.read_role = Role(id=7, role_field='execute_role')
@@ -113,8 +114,9 @@ class TestJobTemplateSerializerGetSummaryFields():
 
         with mocker.patch("awx.api.serializers.role_summary_fields_generator", return_value='Can eat pie'):
             with mocker.patch("awx.main.access.JobTemplateAccess.can_change", return_value='foobar'):
-                with mocker.patch("awx.main.access.JobTemplateAccess.can_add", return_value='foo'):
-                    response = serializer.get_summary_fields(jt_obj)
+                with mocker.patch("awx.main.access.JobTemplateAccess.can_copy", return_value='foo'):
+                    with mock.patch.object(jt_obj.__class__, 'get_deprecated_credential', return_value=None):
+                        response = serializer.get_summary_fields(jt_obj)
 
         assert response['user_capabilities']['copy'] == 'foo'
         assert response['user_capabilities']['edit'] == 'foobar'

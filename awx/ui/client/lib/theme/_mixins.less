@@ -20,7 +20,14 @@
     padding: 0;
 }
 
+.at-mixin-Border (@color: @at-border-default-color) {
+    border-width: @at-border-default-width;
+    border-style: @at-border-default-style;
+    border-color: @color
+}
+
 .at-mixin-Button () {
+    border-radius: @at-border-radius;
     height: @at-height-input;
     padding: @at-padding-button-vertical @at-padding-button-horizontal;
     font-size: @at-font-size-body;
@@ -45,6 +52,7 @@
 
 .at-mixin-ButtonColor (@background, @color, @hover: '@{background}-hover') {
     background-color: @@background;
+    border-color: @@background;
 
     &, &:hover, &:focus {
         color: @@color;
@@ -52,6 +60,7 @@
 
     &:hover, &:focus {
         background-color: @@hover;
+        border-color: @@hover;
     }
 
     &[disabled] {
@@ -99,4 +108,10 @@
 
 .at-mixin-FontFixedWidth () {
     font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+.at-mixin-VerticallyCenter () {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }

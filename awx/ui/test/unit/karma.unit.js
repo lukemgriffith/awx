@@ -1,8 +1,9 @@
 const path = require('path');
+const webpackConfig = require('../../build/webpack.test.js');
+
+process.env.CHROME_BIN = require('puppeteer').executablePath();
 
 const SRC_PATH = path.resolve(__dirname, '../../client/src');
-
-const webpackConfig = require('./webpack.unit');
 
 module.exports = config => {
     config.set({
@@ -11,8 +12,8 @@ module.exports = config => {
         autoWatch: false,
         colors: true,
         frameworks: ['jasmine'],
-        browsers: ['PhantomJS'],
-        reporters: ['progress'],
+        browsers: ['chromeHeadless'],
+        reporters: ['progress', 'junit'],
         files: [
             path.join(SRC_PATH, 'vendor.js'),
             path.join(SRC_PATH, 'app.js'),
@@ -22,7 +23,8 @@ module.exports = config => {
         plugins: [
             'karma-webpack',
             'karma-jasmine',
-            'karma-phantomjs-launcher',
+            'karma-junit-reporter',
+            'karma-chrome-launcher',
             'karma-html2js-preprocessor'
         ],
         preprocessors: {
@@ -34,6 +36,23 @@ module.exports = config => {
         webpack: webpackConfig,
         webpackMiddleware: {
             noInfo: 'errors-only'
-        }
+        },
+        junitReporter: {
+            outputDir: 'reports',
+            outputFile: 'results.unit.xml',
+            useBrowserName: false
+        },
+        customLaunchers: {
+            chromeHeadless: {
+                base: 'Chrome',
+                flags: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--headless',
+                    '--disable-gpu',
+                    '--remote-debugging-port=9222',
+                ],
+            },
+        },
     });
 };

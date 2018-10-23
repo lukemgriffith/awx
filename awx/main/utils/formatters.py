@@ -7,6 +7,10 @@ import json
 import time
 import logging
 
+import six
+
+from django.conf import settings
+
 
 class TimeFormatter(logging.Formatter):
     '''
@@ -18,15 +22,6 @@ class TimeFormatter(logging.Formatter):
 
 
 class LogstashFormatter(LogstashFormatterVersion1):
-    def __init__(self, **kwargs):
-        settings_module = kwargs.pop('settings_module', None)
-        ret = super(LogstashFormatter, self).__init__(**kwargs)
-        if settings_module:
-            self.host_id = getattr(settings_module, 'CLUSTER_HOST_ID', None)
-            if hasattr(settings_module, 'LOG_AGGREGATOR_TOWER_UUID'):
-                self.tower_uuid = settings_module.LOG_AGGREGATOR_TOWER_UUID
-            self.message_type = getattr(settings_module, 'LOG_AGGREGATOR_TYPE', 'other')
-        return ret
 
     def reformat_data_for_log(self, raw_data, kind=None):
         '''
@@ -41,7 +36,7 @@ class LogstashFormatter(LogstashFormatterVersion1):
             data = copy(raw_data['ansible_facts'])
         else:
             data = copy(raw_data)
-        if isinstance(data, basestring):
+        if isinstance(data, six.string_types):
             data = json.loads(data)
         data_for_log = {}
 
@@ -111,6 +106,7 @@ class LogstashFormatter(LogstashFormatterVersion1):
             data_for_log['ansible_facts_modified'] = raw_data['ansible_facts_modified']
             data_for_log['inventory_id'] = raw_data['inventory_id']
             data_for_log['host_name'] = raw_data['host_name']
+            data_for_log['job_id'] = raw_data['job_id']
         elif kind == 'performance':
             request = raw_data['python_objects']['request']
             response = raw_data['python_objects']['response']
@@ -120,6 +116,7 @@ class LogstashFormatter(LogstashFormatterVersion1):
             # exist if SQL_DEBUG is turned on in settings.
             headers = [
                 (float, 'X-API-Time'),  # may end with an 's' "0.33s"
+                (float, 'X-API-Total-Time'),
                 (int, 'X-API-Query-Count'),
                 (float, 'X-API-Query-Time'), # may also end with an 's'
                 (str, 'X-API-Node'),
@@ -131,8 +128,10 @@ class LogstashFormatter(LogstashFormatterVersion1):
                 'path': request.path,
                 'path_info': request.path_info,
                 'query_string': request.META['QUERY_STRING'],
-                'data': request.data,
             }
+
+            if hasattr(request, 'data'):
+                data_for_log['request']['data'] = request.data
 
         return data_for_log
 
@@ -141,6 +140,15 @@ class LogstashFormatter(LogstashFormatterVersion1):
         if record.name.startswith('awx.analytics'):
             log_kind = record.name[len('awx.analytics.'):]
             fields = self.reformat_data_for_log(fields, kind=log_kind)
+        # General AWX metadata
+        for log_name, setting_name in [
+                ('type', 'LOG_AGGREGATOR_TYPE'),
+                ('cluster_host_id', 'CLUSTER_HOST_ID'),
+                ('tower_uuid', 'LOG_AGGREGATOR_TOWER_UUID')]:
+            if hasattr(settings, setting_name):
+                fields[log_name] = getattr(settings, setting_name, None)
+            elif log_name == 'type':
+                fields[log_name] = 'other'
         return fields
 
     def format(self, record):
@@ -152,17 +160,11 @@ class LogstashFormatter(LogstashFormatterVersion1):
             '@timestamp': self.format_timestamp(record.created),
             'message': record.getMessage(),
             'host': self.host,
-            'type': self.message_type,
 
             # Extra Fields
             'level': record.levelname,
             'logger_name': record.name,
         }
-
-        if getattr(self, 'tower_uuid', None):
-            message['tower_uuid'] = self.tower_uuid
-        if getattr(self, 'host_id', None):
-            message['cluster_host_id'] = self.host_id
 
         # Add extra fields
         message.update(self.get_extra_fields(record))

@@ -51,20 +51,20 @@ export default {
             var defer = $q.defer();
                 Rest.setUrl(workflowData.related.workflow_nodes + '?order_by=id');
                 Rest.get()
-                    .success(function(data) {
+                    .then(({data}) => {
                         if(data.next) {
                             let allNodes = data.results;
                             let getNodes = function(nextUrl){
                                 // Get the workflow nodes
                                 Rest.setUrl(nextUrl);
                                 Rest.get()
-                                    .success(function(nextData) {
-                                        for(var i=0; i<nextData.results.length; i++) {
-                                            allNodes.push(nextData.results[i]);
+                                    .then(function(nextData) {
+                                        for(var i=0; i<nextData.data.results.length; i++) {
+                                            allNodes.push(nextData.data.results[i]);
                                         }
-                                        if(nextData.next) {
+                                        if(nextData.data.next) {
                                             // Get the next page
-                                            getNodes(nextData.next);
+                                            getNodes(nextData.data.next);
                                         }
                                         else {
                                             defer.resolve(allNodes);
@@ -77,7 +77,7 @@ export default {
                             defer.resolve(data.results);
                         }
                     })
-                    .error(function() {
+                    .catch(() => {
                         // TODO: handle this
                         //defer.resolve(data);
                     });
@@ -101,7 +101,7 @@ export default {
             var getNext = function(data, arr, resolve) {
                 Rest.setUrl(data.next);
                 Rest.get()
-                    .success(function (data) {
+                    .then(({data}) => {
                         if (data.next) {
                             getNext(data, arr.concat(data.results), resolve);
                         } else {
@@ -115,7 +115,7 @@ export default {
 
             Rest.setUrl(GetBasePath('workflow_jobs') + $stateParams.id + '/labels/');
             Rest.get()
-                .success(function(data) {
+                .then(({data}) => {
                     if (data.next) {
                         getNext(data, data.results, seeMoreResolve);
                     } else {

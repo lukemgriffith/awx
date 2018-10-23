@@ -16,6 +16,7 @@ from awx.main.access import (
 from awx.conf.license import LicenseForbids
 from awx.main.models import (
     Credential,
+    CredentialType,
     Inventory,
     Project,
     Role,
@@ -57,7 +58,7 @@ class TestRelatedFieldAccess:
     def test_new_with_bad_data(self, access, mocker):
         data = {'related': 3.1415}
         with pytest.raises(ParseError):
-            access.check_related('related', mocker.MagicMock, data)
+            access.check_related('related', mocker.MagicMock(), data)
 
     def test_new_mandatory_fail(self, access, mocker):
         access.user.is_superuser = False
@@ -118,10 +119,15 @@ class TestRelatedFieldAccess:
 @pytest.fixture
 def job_template_with_ids(job_template_factory):
     # Create non-persisted objects with IDs to send to job_template_factory
-    credential = Credential(id=1, pk=1, name='testcred', kind='ssh')
-    net_cred = Credential(id=2, pk=2, name='testnetcred', kind='net')
-    cloud_cred = Credential(id=3, pk=3, name='testcloudcred', kind='aws')
-    vault_cred = Credential(id=4, pk=4, name='testnetcred', kind='vault')
+    ssh_type = CredentialType(kind='ssh')
+    credential = Credential(id=1, pk=1, name='testcred', credential_type=ssh_type)
+
+    net_type = CredentialType(kind='net')
+    net_cred = Credential(id=2, pk=2, name='testnetcred', credential_type=net_type)
+
+    cloud_type = CredentialType(kind='aws')
+    cloud_cred = Credential(id=3, pk=3, name='testcloudcred', credential_type=cloud_type)
+
     inv = Inventory(id=11, pk=11, name='testinv')
     proj = Project(id=14, pk=14, name='testproj')
 
@@ -129,7 +135,6 @@ def job_template_with_ids(job_template_factory):
         'testJT', project=proj, inventory=inv, credential=credential,
         cloud_credential=cloud_cred, network_credential=net_cred,
         persisted=False)
-    jt_objects.job_template.vault_credential = vault_cred
     return jt_objects.job_template
 
 
@@ -153,7 +158,7 @@ def test_jt_existing_values_are_nonsensitive(job_template_with_ids, user_unit):
     """Assure that permission checks are not required if submitted data is
     identical to what the job template already has."""
 
-    data = model_to_dict(job_template_with_ids)
+    data = model_to_dict(job_template_with_ids, exclude=['unifiedjobtemplate_ptr'])
     access = JobTemplateAccess(user_unit)
 
     assert access.changes_are_non_sensitive(job_template_with_ids, data)
@@ -175,9 +180,7 @@ def test_change_jt_sensitive_data(job_template_with_ids, mocker, user_unit):
 
     mock_add.assert_called_once_with({
         'inventory': data['inventory'],
-        'project': job_template_with_ids.project.id,
-        'credential': job_template_with_ids.credential.id,
-        'vault_credential': job_template_with_ids.vault_credential.id
+        'project': job_template_with_ids.project.id
     })
 
 
@@ -241,7 +244,7 @@ class TestWorkflowAccessMethods:
     def test_workflow_can_add(self, workflow, user_unit):
         organization = Organization(name='test-org')
         workflow.organization = organization
-        organization.admin_role = Role()
+        organization.workflow_admin_role = Role()
 
         def mock_get_object(Class, **kwargs):
             if Class == Organization:

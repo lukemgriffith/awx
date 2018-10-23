@@ -1,5 +1,7 @@
 from django.contrib.auth.models import User
 
+import six
+
 from awx.main.models import (
     Organization,
     Project,
@@ -135,8 +137,8 @@ def create_instance(name, instance_groups=None):
     return mk_instance(hostname=name)
 
 
-def create_instance_group(name, instances=None):
-    return mk_instance_group(name=name, instance=instances)
+def create_instance_group(name, instances=None, minimum=0, percentage=0):
+    return mk_instance_group(name=name, instance=instances, minimum=minimum, percentage=percentage)
 
 
 def create_survey_spec(variables=None, default_type='integer', required=True, min=None, max=None):
@@ -148,7 +150,7 @@ def create_survey_spec(variables=None, default_type='integer', required=True, mi
         vars_list = variables
     else:
         vars_list = [variables]
-    if isinstance(variables[0], basestring):
+    if isinstance(variables[0], six.string_types):
         slogan = variables[0]
     else:
         slogan = variables[0].get('question_name', 'something')
@@ -415,14 +417,14 @@ def create_workflow_job_template(name, organization=None, persisted=True, **kwar
 
     wfjt = mk_workflow_job_template(name,
                                     organization=organization,
-                                    spec=spec, 
+                                    spec=spec,
                                     extra_vars=extra_vars,
                                     persisted=persisted)
 
-    
 
-    workflow_jt_nodes = generate_workflow_job_template_nodes(wfjt, 
-                                                             persisted, 
+
+    workflow_jt_nodes = generate_workflow_job_template_nodes(wfjt,
+                                                             persisted,
                                                              workflow_job_template_nodes=kwargs.get('workflow_job_template_nodes', []))
 
     '''
@@ -438,5 +440,3 @@ def create_workflow_job_template(name, organization=None, persisted=True, **kwar
                    #jobs=jobs,
                    workflow_job_template_nodes=workflow_jt_nodes,
                    survey=spec,)
-
-

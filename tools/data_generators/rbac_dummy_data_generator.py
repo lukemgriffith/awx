@@ -89,7 +89,7 @@ options = vars(options)
 
 
 if options['preset']:
-    print ' Using preset data numbers set ' + str(options['preset'])
+    print(' Using preset data numbers set ' + str(options['preset']))
     # Read the numbers of resources from presets file, if provided
     presets_filename = os.path.abspath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), 'presets.tsv'))
@@ -490,16 +490,16 @@ def make_the_data():
                         defaults=dict(
                             inventory=inventory,
                             project=project,
-                            credential=next(credential_gen),
                             created_by=next(creator_gen),
                             modified_by=next(modifier_gen),
                             playbook="debug.yml",
                             **extra_kwargs)
                     )
+                    job_template.credentials.add(next(credential_gen))
                     if ids['job_template'] % 7 == 0:
-                        job_template.extra_credentials.add(next(credential_gen))
+                        job_template.credentials.add(next(credential_gen))
                     if ids['job_template'] % 5 == 0:  # formerly cloud credential
-                        job_template.extra_credentials.add(next(credential_gen))
+                        job_template.credentials.add(next(credential_gen))
                     job_template._is_new = _
                     job_templates.append(job_template)
                     inv_idx += 1
@@ -554,12 +554,12 @@ def make_the_data():
                     if i % 2 == 0:
                         # only apply inventories for every other node
                         kwargs['inventory'] = next(inv_gen)
-                    if i % 3 == 0:
-                        # only apply prompted credential every 3rd node
-                        kwargs['credential'] = next(cred_gen)
                     node, _ = WorkflowJobTemplateNode.objects.get_or_create(
                         **kwargs
                     )
+                    if i % 3 == 0:
+                        # only apply prompted credential every 3rd node
+                        node.credentials.add(next(cred_gen))
                     # nodes.append(node)
                     wfjt_nodes.append(node)
                     if i <= 3:
@@ -649,10 +649,9 @@ def make_the_data():
                         job_template=job_template,
                         status=job_stat, name="%s-%d" % (job_template.name, job_i),
                         project=job_template.project, inventory=job_template.inventory,
-                        credential=job_template.credential,
                     )
-                    for ec in job_template.extra_credentials.all():
-                        job.extra_credentials.add(ec)
+                    for ec in job_template.credentials.all():
+                        job.credentials.add(ec)
                     job._is_new = _
                     jobs.append(job)
                     job_i += 1

@@ -879,14 +879,15 @@ input[type="checkbox"].checkbox-no-label {
 
 .checkbox-options {
   font-weight: normal;
-  padding-right: 20px;
 }
 
 /* Display list actions next to search widget */
 .list-actions {
-    text-align: right;
-    margin-bottom: -34px;
+    display: flex;
     height: 34px;
+    justify-content: flex-end;
+    margin-bottom: -34px;
+    text-align: right;
 
     .fa-lg {
         vertical-align: -8%;
@@ -1047,6 +1048,8 @@ input[type="checkbox"].checkbox-no-label {
       color: @green;
   }
 
+  .icon-host-all:before,
+  .icon-host-failed:before,
   .icon-job-active:before,
   .icon-job-running:before,
   .icon-job-success:before,
@@ -1098,12 +1101,17 @@ input[type="checkbox"].checkbox-no-label {
       color: @changed;
   }
 
+  .icon-host-failed,
   .icon-job-stopped,
   .icon-job-error,
   .icon-job-failed,
   .icon-job-stdout-download-tooltip,
   .icon-job-canceled {
       color: @red;
+  }
+
+  .icon-host-all {
+      color: @at-blue;
   }
 
   .icon-job-unreachable {
@@ -1246,6 +1254,10 @@ input[type="checkbox"].checkbox-no-label {
 
   .error-color {
       color:@red;
+  }
+
+  .error-border {
+      border-color:@red;
   }
 
   .connecting-color {
@@ -2321,10 +2333,30 @@ body {
     margin-top: 20px;
 }
 
+.Panel--noBottomPadding {
+    padding-bottom: 0px;
+}
+
 .Panel-hidden {
     display: none;
 }
 
 .btn {
     text-transform: uppercase;
+}
+
+.ui-spinner-input {
+    margin-top: .3em;
+    margin-bottom: .3em;
+}
+
+.Toast-wrapper {
+    display: flex;
+    max-width: 250px;
+}
+
+.Toast-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }

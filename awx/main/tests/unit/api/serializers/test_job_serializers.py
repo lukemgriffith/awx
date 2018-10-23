@@ -1,28 +1,35 @@
 # Python
+from collections import namedtuple
 import pytest
 import mock
 import json
 
+from six.moves import xrange
+
 # AWX
 from awx.api.serializers import (
+    JobDetailSerializer,
     JobSerializer,
     JobOptionsSerializer,
+    ProjectUpdateDetailSerializer,
 )
 
 from awx.main.models import (
     Label,
     Job,
+    JobEvent,
+    ProjectUpdateEvent,
 )
 
 
 def mock_JT_resource_data():
-    return ({}, [])
+    return {}
 
 
 @pytest.fixture
 def job_template(mocker):
     mock_jt = mocker.MagicMock(pk=5)
-    mock_jt.resource_validation_data = mock_JT_resource_data
+    mock_jt.validation_errors = mock_JT_resource_data
     return mock_jt
 
 
@@ -51,6 +58,7 @@ def jobs(mocker):
 @mock.patch('awx.api.serializers.UnifiedJobTemplateSerializer.get_related', lambda x,y: {})
 @mock.patch('awx.api.serializers.JobOptionsSerializer.get_related', lambda x,y: {})
 class TestJobSerializerGetRelated():
+
     @pytest.mark.parametrize("related_resource_name", [
         'job_events',
         'relaunch',
@@ -74,6 +82,7 @@ class TestJobSerializerGetRelated():
 @mock.patch('awx.api.serializers.BaseSerializer.to_representation', lambda self,obj: {
     'extra_vars': obj.extra_vars})
 class TestJobSerializerSubstitution():
+
     def test_survey_password_hide(self, mocker):
         job = mocker.MagicMock(**{
             'display_extra_vars.return_value': '{\"secret_key\": \"$encrypted$\"}',
@@ -88,6 +97,7 @@ class TestJobSerializerSubstitution():
 
 @mock.patch('awx.api.serializers.BaseSerializer.get_summary_fields', lambda x,y: {})
 class TestJobOptionsSerializerGetSummaryFields():
+
     def test__summary_field_labels_10_max(self, mocker, job_template, labels):
         job_template.labels.all = mocker.MagicMock(**{'return_value': labels})
 
@@ -99,3 +109,87 @@ class TestJobOptionsSerializerGetSummaryFields():
 
     def test_labels_exists(self, test_get_summary_fields, job_template):
         test_get_summary_fields(JobOptionsSerializer, job_template, 'labels')
+
+
+class TestJobDetailSerializerGetHostStatusCountFields(object):
+
+    def test_hosts_are_counted_once(self, job, mocker):
+        mock_event = JobEvent(**{
+            'event': 'playbook_on_stats',
+            'event_data': {
+                'skipped': {
+                    'localhost': 2,
+                    'fiz': 1,
+                },
+                'ok': {
+                    'localhost': 1,
+                    'foo': 2,
+                },
+                'changed': {
+                    'localhost': 1,
+                    'bar': 3,
+                },
+                'dark': {
+                    'localhost': 2,
+                    'fiz': 2,
+                }
+            }
+        })
+
+        mock_qs = namedtuple('mock_qs', ['get'])(mocker.MagicMock(return_value=mock_event))
+        job.job_events.only = mocker.MagicMock(return_value=mock_qs)
+
+        serializer = JobDetailSerializer()
+        host_status_counts = serializer.get_host_status_counts(job)
+
+        assert host_status_counts == {'ok': 1, 'changed': 1, 'dark': 2}
+
+    def test_host_status_counts_is_empty_dict_without_stats_event(self, job):
+        job.job_events = JobEvent.objects.none()
+
+        serializer = JobDetailSerializer()
+        host_status_counts = serializer.get_host_status_counts(job)
+
+        assert host_status_counts == {}
+
+
+class TestProjectUpdateDetailSerializerGetHostStatusCountFields(object):
+
+    def test_hosts_are_counted_once(self, project_update, mocker):
+        mock_event = ProjectUpdateEvent(**{
+            'event': 'playbook_on_stats',
+            'event_data': {
+                'skipped': {
+                    'localhost': 2,
+                    'fiz': 1,
+                },
+                'ok': {
+                    'localhost': 1,
+                    'foo': 2,
+                },
+                'changed': {
+                    'localhost': 1,
+                    'bar': 3,
+                },
+                'dark': {
+                    'localhost': 2,
+                    'fiz': 2,
+                }
+            }
+        })
+
+        mock_qs = namedtuple('mock_qs', ['get'])(mocker.MagicMock(return_value=mock_event))
+        project_update.project_update_events.only = mocker.MagicMock(return_value=mock_qs)
+
+        serializer = ProjectUpdateDetailSerializer()
+        host_status_counts = serializer.get_host_status_counts(project_update)
+
+        assert host_status_counts == {'ok': 1, 'changed': 1, 'dark': 2}
+
+    def test_host_status_counts_is_empty_dict_without_stats_event(self, project_update):
+        project_update.project_update_events = ProjectUpdateEvent.objects.none()
+
+        serializer = ProjectUpdateDetailSerializer()
+        host_status_counts = serializer.get_host_status_counts(project_update)
+
+        assert host_status_counts == {}

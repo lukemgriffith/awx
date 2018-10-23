@@ -132,6 +132,10 @@ export default
                         job_launch_data.diff_mode = scope.other_prompt_data.diff_mode;
                     }
 
+                    if(!Empty(scope.relaunchHostType)) {
+                        job_launch_data.hosts = scope.relaunchHostType;
+                    }
+
                     // If the extra_vars dict is empty, we don't want to include it if we didn't prompt for anything.
                     if(jQuery.isEmptyObject(job_launch_data.extra_vars)===true && scope.prompt_for_vars===false){
                         delete job_launch_data.extra_vars;
@@ -139,14 +143,14 @@ export default
 
                     Rest.setUrl(url);
                     Rest.post(job_launch_data)
-                    .success(function(data) {
+                    .then(({data}) => {
                         Wait('stop');
                         var job = data.job || data.system_job || data.project_update || data.inventory_update || data.ad_hoc_command;
                         if(base !== 'portal' && Empty(data.system_job) || (base === 'home')){
                             // use $state.go with reload: true option to re-instantiate sockets in
 
-                            var goTojobResults = function(state) {
-                                $state.go(state, {id: job}, {reload:true});
+                            var goTojobResults = function(type) {
+                                $state.go('output', {id: job, type}, {reload:true});
                             };
 
                             if($state.includes('jobs')) {
@@ -155,23 +159,23 @@ export default
 
                             else {
                                 if(_.has(data, 'job')) {
-                                    goTojobResults('jobResult');
+                                    goTojobResults('playbook');
                                 } else if(data.type && data.type === 'workflow_job') {
                                     job = data.id;
-                                    goTojobResults('workflowResults');
+                                    goTojobResults('workflow_job');
                                 }
                                 else if(_.has(data, 'ad_hoc_command')) {
-                                    goTojobResults('adHocJobStdout');
+                                    goTojobResults('ad_hoc_command');
                                 }
                                 else if(_.has(data, 'system_job')) {
-                                    goTojobResults('managementJobStdout');
+                                    goTojobResults('system_job');
                                 }
                                 else if(_.has(data, 'project_update')) {
                                     // If we are on the projects list or any child state of that list
                                     // then we want to stay on that page.  Otherwise go to the stdout
                                     // view.
                                     if(!$state.includes('projects')) {
-                                        goTojobResults('scmUpdateStdout');
+                                        goTojobResults('project_update');
                                     }
                                 }
                                 else if(_.has(data, 'inventory_update')) {
@@ -179,7 +183,7 @@ export default
                                     // page then we want to stay on that page.  Otherwise go to the stdout
                                     // view.
                                     if(!$state.includes('inventories.edit')) {
-                                        goTojobResults('inventorySyncStdout');
+                                        goTojobResults('playbook');
                                     }
                                 }
                             }
@@ -188,7 +192,7 @@ export default
                             $state.go('.', null, {reload: true});
                         }
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         let template_id = scope.job_template_id;
                         template_id = (template_id === undefined) ? "undefined" : i18n.sprintf("%d", template_id);
                         ProcessErrors(scope, data, status, null, { hdr: i18n._('Error!'),
@@ -200,7 +204,7 @@ export default
                 var getExtraVars = function() {
                     Rest.setUrl(vars_url);
                     Rest.get()
-                    .success(function (data) {
+                    .then(({data}) => {
                         if(!Empty(data.extra_vars)){
                             data.extra_vars = ToJSON('yaml',  data.extra_vars, false);
                             $.each(data.extra_vars, function(key,value){
@@ -209,7 +213,7 @@ export default
                         }
                         buildData();
                     })
-                    .error(function (data, status) {
+                    .catch(({data, status}) => {
                         ProcessErrors(scope, data, status, { hdr: i18n._('Error!'),
                         msg: i18n._('Failed to retrieve job template extra variables.')  });
                     });

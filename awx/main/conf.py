@@ -38,7 +38,18 @@ register(
     'ORG_ADMINS_CAN_SEE_ALL_USERS',
     field_class=fields.BooleanField,
     label=_('All Users Visible to Organization Admins'),
-    help_text=_('Controls whether any Organization Admin can view all users, even those not associated with their Organization.'),
+    help_text=_('Controls whether any Organization Admin can view all users and teams, '
+                'even those not associated with their Organization.'),
+    category=_('System'),
+    category_slug='system',
+)
+
+register(
+    'MANAGE_ORGANIZATION_AUTH',
+    field_class=fields.BooleanField,
+    label=_('Organization Admins Can Manage Users and Teams'),
+    help_text=_('Controls whether any Organization Admin has the privileges to create and manage users and teams. '
+                'You may want to disable this ability if you are using an LDAP or SAML integration.'),
     category=_('System'),
     category_slug='system',
 )
@@ -70,14 +81,9 @@ register(
     label=_('Remote Host Headers'),
     help_text=_('HTTP headers and meta keys to search to determine remote host '
                 'name or IP. Add additional items to this list, such as '
-                '"HTTP_X_FORWARDED_FOR", if behind a reverse proxy.\n\n'
-                'Note: The headers will be searched in order and the first '
-                'found remote host name or IP will be used.\n\n'
-                'In the below example 8.8.8.7 would be the chosen IP address.\n'
-                'X-Forwarded-For: 8.8.8.7, 192.168.2.1, 127.0.0.1\n'
-                'Host: 127.0.0.1\n'
-                'REMOTE_HOST_HEADERS = [\'HTTP_X_FORWARDED_FOR\', '
-                '\'REMOTE_ADDR\', \'REMOTE_HOST\']'),
+                '"HTTP_X_FORWARDED_FOR", if behind a reverse proxy. '
+                'See the "Proxy Support" section of the Adminstrator guide for '
+                'more details.'),
     category=_('System'),
     category_slug='system',
 )
@@ -88,9 +94,7 @@ register(
     label=_('Proxy IP Whitelist'),
     help_text=_("If Tower is behind a reverse proxy/load balancer, use this setting "
                 "to whitelist the proxy IP addresses from which Tower should trust "
-                "custom REMOTE_HOST_HEADERS header values\n"
-                "REMOTE_HOST_HEADERS = ['HTTP_X_FORWARDED_FOR', ''REMOTE_ADDR', 'REMOTE_HOST']\n"
-                "PROXY_IP_WHITELIST = ['10.0.1.100', '10.0.1.101']\n"
+                "custom REMOTE_HOST_HEADERS header values. "
                 "If this setting is an empty list (the default), the headers specified by "
                 "REMOTE_HOST_HEADERS will be trusted unconditionally')"),
     category=_('System'),
@@ -105,7 +109,7 @@ def _load_default_license_from_file():
             license_data = json.load(open(license_file))
             logger.debug('Read license data from "%s".', license_file)
             return license_data
-    except:
+    except Exception:
         logger.warning('Could not read license from "%s".', license_file, exc_info=True)
     return {}
 
@@ -130,6 +134,27 @@ register(
     category=_('Jobs'),
     category_slug='jobs',
     required=False,
+)
+
+register(
+    'ALLOW_JINJA_IN_EXTRA_VARS',
+    field_class=fields.ChoiceField,
+    choices=[
+        ('always', _('Always')),
+        ('never', _('Never')),
+        ('template', _('Only On Job Template Definitions')),
+    ],
+    required=True,
+    label=_('When can extra variables contain Jinja templates?'),
+    help_text=_(
+        'Ansible allows variable substitution via the Jinja2 templating '
+        'language for --extra-vars. This poses a potential security '
+        'risk where Tower users with the ability to specify extra vars at job '
+        'launch time can use Jinja2 templates to run arbitrary Python.  It is '
+        'recommended that this value be set to "template" or "never".'
+    ),
+    category=_('Jobs'),
+    category_slug='jobs',
 )
 
 register(
@@ -254,6 +279,16 @@ register(
 )
 
 register(
+    'AWX_ROLES_ENABLED',
+    field_class=fields.BooleanField,
+    default=True,
+    label=_('Enable Role Download'),
+    help_text=_('Allows roles to be dynamically downlaoded from a requirements.yml file for SCM projects.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
     'STDOUT_MAX_BYTES_DISPLAY',
     field_class=fields.IntegerField,
     min_value=0,
@@ -338,7 +373,8 @@ register(
     label=_('Per-Host Ansible Fact Cache Timeout'),
     help_text=_('Maximum time, in seconds, that stored Ansible facts are considered valid since '
                 'the last time they were modified. Only valid, non-stale, facts will be accessible by '
-                'a playbook. Note, this does not influence the deletion of ansible_facts from the database.'),
+                'a playbook. Note, this does not influence the deletion of ansible_facts from the database. '
+                'Use a value of 0 to indicate that no timeout should be imposed.'),
     category=_('Jobs'),
     category_slug='jobs',
 )
@@ -418,7 +454,7 @@ register(
     field_class=fields.BooleanField,
     default=False,
     label=_('Log System Tracking Facts Individually'),
-    help_text=_('If set, system tracking facts will be sent for each package, service, or'
+    help_text=_('If set, system tracking facts will be sent for each package, service, or '
                 'other item found in a scan, allowing for greater search query granularity. '
                 'If unset, facts will be sent as a single dictionary, allowing for greater '
                 'efficiency in fact processing.'),
@@ -447,10 +483,12 @@ register(
 register(
     'LOG_AGGREGATOR_PROTOCOL',
     field_class=fields.ChoiceField,
-    choices=[('https', 'HTTPS'), ('tcp', 'TCP'), ('udp', 'UDP')],
+    choices=[('https', 'HTTPS/HTTP'), ('tcp', 'TCP'), ('udp', 'UDP')],
     default='https',
     label=_('Logging Aggregator Protocol'),
-    help_text=_('Protocol used to communicate with log aggregator.'),
+    help_text=_('Protocol used to communicate with log aggregator.  '
+                'HTTPS/HTTP assumes HTTPS unless http:// is explicitly used in '
+                'the Logging Aggregator hostname.'),
     category=_('Logging'),
     category_slug='logging',
 )

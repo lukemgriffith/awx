@@ -10,42 +10,44 @@
     flex: 0 1 auto;
 }
 
-.SmartStatus--success{
-    color: @default-succ;
-    margin-top: 10px;
-    margin-bottom: 10px;
-    padding: 0px;
+.SmartStatus-icon {
+    width: 14px;
+    height: 14px;
 }
 
-.SmartStatus--failed{
-    color: @default-err;
-    margin-top: 10px;
-    margin-bottom: 10px;
-    padding: 0px;
+.SmartStatus-iconDirectionPlaceholder {
+    width: 14px;
+    height: 7px;
+    border: 1px solid @d7grey;
+    background: #f2f2f2;
 }
 
-.SmartStatus--failed:before {
-    content: "\f06a";
+.SmartStatus-iconDirectionPlaceholder--bottom {
+    border-bottom: 0;
 }
 
-.SmartStatus--running{
-    color: @default-icon;
-    margin-top: 10px;
-    padding: 0px;
-    .pulsate();
+.SmartStatus-iconDirectionPlaceholder--top {
+    border-top: 0;
 }
 
-.SmartStatus-vertCenter{
-    margin-top: 10px;
-    margin-bottom: 10px;
-    padding: 0px;
+.SmartStatus-iconIndicator {
+    width: 14px;
+    height: 7px;
 }
 
-.SmartStatus-tooltip{
-    text-align: left;
-    max-width: 250px;
-    padding: 10px;
-    line-height: 22px;
+.SmartStatus-iconIndicator--success {
+    background: #5cb85c;
+}
+
+.SmartStatus-iconIndicator--failed {
+    background: #d9534f;
+}
+
+.SmartStatus-iconPlaceholder {
+    height: 14px;
+    width: 14px;
+    border: 1px solid @d7grey;
+    background: #f2f2f2;
 }
 
 .SmartStatus-tooltip--successful,
@@ -79,4 +81,27 @@
         -1px 1px 0 @default-bg,
         1px 1px 0 @default-bg;
     .pulsate();
+}
+
+.SmartStatus-waiting {
+    width: 14px;
+    height: 14px;
+    border: 1px solid @d7grey;
+}
+
+@keyframes pulse_animation {
+	0% { transform: scale(1); }
+	50% { transform: scale(0); }
+	100% { transform: scale(1); }
+}
+
+.SmartStatus-running {
+    height: 14px;
+    width: 14px;
+    background-color: @default-succ;
+	animation-name: pulse_animation;
+	animation-duration: 5000ms;
+	transform-origin:70% 70%;
+	animation-iteration-count: infinite;
+	animation-timing-function: linear;
 }

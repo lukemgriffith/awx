@@ -7,6 +7,7 @@ from awx.main.models.workflow import WorkflowJob, WorkflowJobNode, WorkflowJobTe
 from awx.main.models.jobs import JobTemplate, Job
 from awx.main.models.projects import ProjectUpdate
 from awx.main.scheduler.dag_workflow import WorkflowDAG
+from awx.api.versioning import reverse
 
 # Django
 from django.test import TransactionTestCase
@@ -60,6 +61,15 @@ class TestWorkflowDAGFunctional(TransactionTestCase):
         is_done, has_failed = dag.is_workflow_done()
         self.assertTrue(is_done)
         self.assertFalse(has_failed)
+
+        # verify that relaunched WFJ fails if a JT leaf is deleted
+        for jt in JobTemplate.objects.all():
+            jt.delete()
+        relaunched = wfj.create_relaunch_workflow_job()
+        dag = WorkflowDAG(workflow_job=relaunched)
+        is_done, has_failed = dag.is_workflow_done()
+        self.assertTrue(is_done)
+        self.assertTrue(has_failed)
 
     def test_workflow_fails_for_unfinished_node(self):
         wfj = self.workflow_job(states=['error', None, None, None, None])
@@ -187,28 +197,15 @@ class TestWorkflowJobTemplate:
         assert test_view.is_valid_relation(node_assoc, nodes[1]) == {'Error': 'Multiple parent relationship not allowed.'}
         # test mutex validation
         test_view.relationship = 'failure_nodes'
-        node_assoc_1 = WorkflowJobTemplateNode.objects.create(workflow_job_template=wfjt)
-        assert (test_view.is_valid_relation(nodes[2], node_assoc_1) ==
-                {'Error': 'Cannot associate failure_nodes when always_nodes have been associated.'})
-
-    def test_wfjt_copy(self, wfjt, job_template, inventory, admin_user):
-        old_nodes = wfjt.workflow_job_template_nodes.all()
-        node1 = old_nodes[1]
-        node1.unified_job_template = job_template
-        node1.save()
-        node2 = old_nodes[2]
-        node2.inventory = inventory
-        node2.save()
-        new_wfjt = wfjt.user_copy(admin_user)
-        for fd in ['description', 'survey_spec', 'survey_enabled', 'extra_vars']:
-            assert getattr(wfjt, fd) == getattr(new_wfjt, fd)
-        assert new_wfjt.organization == wfjt.organization
-        assert len(new_wfjt.workflow_job_template_nodes.all()) == 3
-        nodes = new_wfjt.workflow_job_template_nodes.all()
-        assert nodes[0].success_nodes.all()[0] == nodes[1]
-        assert nodes[1].failure_nodes.all()[0] == nodes[2]
-        assert nodes[1].unified_job_template == job_template
-        assert nodes[2].inventory == inventory
+        
+    def test_always_success_failure_creation(self, wfjt, admin, get):
+        wfjt_node = wfjt.workflow_job_template_nodes.all()[1]
+        node = WorkflowJobTemplateNode.objects.create(workflow_job_template=wfjt)
+        wfjt_node.always_nodes.add(node)
+        assert len(node.get_parent_nodes()) == 1
+        url = reverse('api:workflow_job_template_node_list') + str(wfjt_node.id) + '/'
+        resp = get(url, admin)
+        assert node.id in resp.data['always_nodes']
 
     def test_wfjt_unique_together_with_org(self, organization):
         wfjt1 = WorkflowJobTemplate(name='foo', organization=organization)

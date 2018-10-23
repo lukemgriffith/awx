@@ -8,14 +8,14 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
     'Alert', 'ProcessErrors', 'GenerateForm', 'Prompt',
     'GetBasePath', 'GetProjectPath', 'Authorization', 'GetChoices', 'Empty',
     'Wait', 'ProjectUpdate', '$state', 'CreateSelect2', 'ToggleNotification',
-    'i18n', 'CredentialTypes', 'OrgAdminLookup',
+    'i18n', 'CredentialTypes', 'OrgAdminLookup', 'ConfigData',
     function($scope, $rootScope, $stateParams, ProjectsForm, Rest, Alert,
     ProcessErrors, GenerateForm, Prompt, GetBasePath,
     GetProjectPath, Authorization, GetChoices, Empty, Wait, ProjectUpdate,
     $state, CreateSelect2, ToggleNotification, i18n, CredentialTypes,
-    OrgAdminLookup) {
+    OrgAdminLookup, ConfigData) {
 
-        var form = ProjectsForm(),
+        let form = ProjectsForm(),
             defaultUrl = GetBasePath('projects') + $stateParams.project_id + '/',
             master = {},
             id = $stateParams.project_id;
@@ -25,6 +25,8 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
         function init() {
             $scope.project_local_paths = [];
             $scope.base_dir = '';
+            const virtualEnvs = ConfigData.custom_virtualenvs || [];
+            $scope.custom_virtualenvs_options = virtualEnvs;
         }
 
         $scope.$watch('project_obj.summary_fields.user_capabilities.edit', function(val) {
@@ -85,7 +87,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
             // Retrieve detail record and prepopulate the form
             Rest.setUrl(defaultUrl);
             Rest.get({ params: { id: id } })
-                .success(function(data) {
+                .then(({data}) => {
                     var fld, i;
                     for (fld in form.fields) {
                         if (form.fields[fld].type === 'checkbox_group') {
@@ -131,7 +133,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                     });
 
                     $scope.scmBranchLabel = ($scope.scm_type.value === 'svn') ? 'Revision #' : 'SCM Branch';
-                    $scope.scm_update_tooltip = i18n._("Start an SCM update");
+                    $scope.scm_update_tooltip = i18n._("Get latest SCM revision");
                     $scope.scm_type_class = "";
                     if (data.status === 'running' || data.status === 'updating') {
                         $scope.scm_update_tooltip = i18n._("SCM update currently running");
@@ -142,17 +144,24 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                         $scope.scm_type_class = "btn-disabled";
                     }
 
-                    OrgAdminLookup.checkForAdminAccess({organization: data.organization})
+                    OrgAdminLookup.checkForRoleLevelAdminAccess(data.organization, 'project_admin_role')
                     .then(function(canEditOrg){
                         $scope.canEditOrg = canEditOrg;
                     });
 
+                    CreateSelect2({
+                        element: '#project_custom_virtualenv',
+                        multiple: false,
+                        opts: $scope.custom_virtualenvs_options
+                    });
+
                     $scope.project_obj = data;
                     $scope.name = data.name;
+                    $scope.breadcrumb.project_name = data.name;
                     $scope.$emit('projectLoaded');
                     Wait('stop');
                 })
-                .error(function (data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, form, { hdr: i18n._('Error!'),
                         msg: i18n.sprintf(i18n._('Failed to retrieve project: %s. GET status: '), id) + status
                     });
@@ -214,11 +223,11 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
 
             Rest.setUrl(defaultUrl);
             Rest.put(params)
-                .success(function() {
+                .then(() => {
                     Wait('stop');
                     $state.go($state.current, {}, { reload: true });
                 })
-                .error(function(data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, form, { hdr: i18n._('Error!'), msg: i18n.sprintf(i18n._('Failed to update project: %s. PUT status: '), id) + status });
                 });
         };
@@ -230,10 +239,10 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                 $rootScope.flashMessage = null;
                 Rest.setUrl(url);
                 Rest.post({ id: itm_id, disassociate: 1 })
-                    .success(function() {
+                    .then(() => {
                         $('#prompt-modal').modal('hide');
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         $('#prompt-modal').modal('hide');
                         ProcessErrors($scope, data, status, null, { hdr: i18n._('Error!'), msg: i18n.sprintf(i18n._('Call to %s failed. POST returned status: '), url) + status });
                     });
@@ -261,7 +270,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                     }
                     switch ($scope.scm_type.value) {
                         case 'git':
-                            $scope.credentialLabel = "SCM Credential";
+                            $scope.credentialLabel = "SCM " + i18n._("Credential");
                             $scope.urlPopover = '<p>' + i18n._('Example URLs for GIT SCM include:') + '</p><ul class=\"no-bullets\"><li>https://github.com/ansible/ansible.git</li>' +
                                 '<li>git@github.com:ansible/ansible.git</li><li>git://servername.example.com/ansible.git</li></ul>' +
                                 '<p>' + i18n.sprintf(i18n._('%sNote:%s When using SSH protocol for GitHub or Bitbucket, enter an SSH key only, ' +
@@ -272,7 +281,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                             $scope.scmBranchLabel = i18n._('SCM Branch/Tag/Commit');
                             break;
                         case 'svn':
-                            $scope.credentialLabel = "SCM Credential";
+                            $scope.credentialLabel = "SCM " + i18n._("Credential");
                             $scope.urlPopover = '<p>' + i18n._('Example URLs for Subversion SCM include:') + '</p>' +
                                 '<ul class=\"no-bullets\"><li>https://github.com/ansible/ansible</li><li>svn://servername.example.com/path</li>' +
                                 '<li>svn+ssh://servername.example.com/path</li></ul>';
@@ -281,7 +290,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                             $scope.scmBranchLabel = i18n._('Revision #');
                             break;
                         case 'hg':
-                            $scope.credentialLabel = "SCM Credential";
+                            $scope.credentialLabel = "SCM " + i18n._("Credential");
                             $scope.urlPopover = '<p>' + i18n._('Example URLs for Mercurial SCM include:') + '</p>' +
                                 '<ul class=\"no-bullets\"><li>https://bitbucket.org/username/project</li><li>ssh://hg@bitbucket.org/username/project</li>' +
                                 '<li>ssh://server.example.com/path</li></ul>' +
@@ -300,7 +309,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                             $scope.lookupType = 'insights_credential';
                             break;
                         default:
-                            $scope.credentialLabel = "SCM Credential";
+                            $scope.credentialLabel = "SCM " + i18n._("Credential");
                             $scope.urlPopover = '<p> ' + i18n._('URL popover text');
                             $scope.credRequired = false;
                             $scope.lookupType = 'scm_credential';

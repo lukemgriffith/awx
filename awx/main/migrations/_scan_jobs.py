@@ -3,6 +3,8 @@ import logging
 from django.utils.timezone import now
 from django.utils.text import slugify
 
+import six
+
 from awx.main.models.base import PERM_INVENTORY_SCAN, PERM_INVENTORY_DEPLOY
 from awx.main import utils
 
@@ -13,7 +15,7 @@ logger = logging.getLogger('awx.main.migrations')
 def _create_fact_scan_project(ContentType, Project, org):
     ct = ContentType.objects.get_for_model(Project)
     name = u"Tower Fact Scan - {}".format(org.name if org else "No Organization")
-    proj = Project(name=name, 
+    proj = Project(name=name,
                    scm_url='https://github.com/ansible/awx-facts-playbooks',
                    scm_type='git',
                    scm_update_on_launch=True,
@@ -24,7 +26,7 @@ def _create_fact_scan_project(ContentType, Project, org):
                    polymorphic_ctype=ct)
     proj.save()
 
-    slug_name = slugify(unicode(name)).replace(u'-', u'_')
+    slug_name = slugify(six.text_type(name)).replace(u'-', u'_')
     proj.local_path = u'_%d__%s' % (int(proj.pk), slug_name)
 
     proj.save()
@@ -51,10 +53,10 @@ def _migrate_scan_job_templates(apps):
     Project = apps.get_model('main', 'Project')
 
     project_no_org = None
-    
+
     # A scan job template with a custom project will retain the custom project.
     JobTemplate.objects.filter(job_type=PERM_INVENTORY_SCAN, project__isnull=False).update(use_fact_cache=True, job_type=PERM_INVENTORY_DEPLOY)
-    
+
     # Scan jobs templates using Tower's default scan playbook will now point at
     # the same playbook but in a github repo.
     jts = _get_tower_scan_job_templates(JobTemplate)
@@ -82,3 +84,29 @@ def _migrate_scan_job_templates(apps):
 
 def migrate_scan_job_templates(apps, schema_editor):
     _migrate_scan_job_templates(apps)
+
+
+def remove_scan_type_nodes(apps, schema_editor):
+    WorkflowJobTemplateNode = apps.get_model('main', 'WorkflowJobTemplateNode')
+    WorkflowJobNode = apps.get_model('main', 'WorkflowJobNode')
+
+    for cls in (WorkflowJobNode, WorkflowJobTemplateNode):
+        for node in cls.objects.iterator():
+            prompts = node.char_prompts
+            if prompts.get('job_type', None) == 'scan':
+                log_text = '{} set job_type to scan, which was deprecated in 3.2, removing.'.format(cls)
+                if cls == WorkflowJobNode:
+                    logger.info(log_text)
+                else:
+                    logger.debug(log_text)
+                prompts.pop('job_type')
+                node.char_prompts = prompts
+                node.save()
+
+
+def remove_legacy_fact_cleanup(apps, schema_editor):
+    SystemJobTemplate = apps.get_model('main', 'SystemJobTemplate')
+    for job in SystemJobTemplate.objects.filter(job_type='cleanup_facts').all():
+        for sched in job.schedules.all():
+            sched.delete()
+        job.delete()

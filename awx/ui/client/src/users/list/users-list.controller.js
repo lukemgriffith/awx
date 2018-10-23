@@ -14,21 +14,23 @@ const user_type_options = [
 
 export default ['$scope', '$rootScope', 'Rest', 'UserList', 'Prompt',
     'ProcessErrors', 'GetBasePath', 'Wait', '$state', '$filter',
-    'rbacUiControlService', 'Dataset', 'i18n',
+    'rbacUiControlService', 'Dataset', 'i18n', 'resolvedModels',
     function($scope, $rootScope, Rest, UserList, Prompt,
     ProcessErrors, GetBasePath, Wait, $state, $filter, rbacUiControlService,
-    Dataset, i18n) {
+    Dataset, i18n, models) {
 
         for (var i = 0; i < user_type_options.length; i++) {
             user_type_options[i].label = i18n._(user_type_options[i].label);
         }
 
+        const { me } = models;
         var list = UserList,
-            defaultUrl = GetBasePath('users');
+        defaultUrl = GetBasePath('users');
 
         init();
 
         function init() {
+            $scope.canEdit = me.get('summary_fields.user_capabilities.edit');
             $scope.canAdd = false;
 
             rbacUiControlService.canAdd('users')
@@ -62,11 +64,11 @@ export default ['$scope', '$rootScope', 'Rest', 'UserList', 'Prompt',
                 var url = defaultUrl + id + '/';
                 Rest.setUrl(url);
                 Rest.destroy()
-                    .success(function() {
+                    .then(() => {
 
                         let reloadListStateParams = null;
 
-                        if($scope.users.length === 1 && $state.params.user_search && !_.isEmpty($state.params.user_search.page) && $state.params.user_search.page !== '1') {
+                        if($scope.users.length === 1 && $state.params.user_search && _.has($state, 'params.user_search.page') && $state.params.user_search.page !== '1') {
                             reloadListStateParams = _.cloneDeep($state.params);
                             reloadListStateParams.user_search.page = (parseInt(reloadListStateParams.user_search.page)-1).toString();
                         }
@@ -77,7 +79,7 @@ export default ['$scope', '$rootScope', 'Rest', 'UserList', 'Prompt',
                             $state.go('.', null, { reload: true });
                         }
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         ProcessErrors($scope, data, status, null, {
                             hdr: i18n._('Error!'),
                             msg: i18n.sprintf(i18n._('Call to %s failed. DELETE returned status: '), url) + status
@@ -87,7 +89,8 @@ export default ['$scope', '$rootScope', 'Rest', 'UserList', 'Prompt',
 
             Prompt({
                 hdr: i18n._('Delete'),
-                body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete the user below?') + '</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(name) + '</div>',
+                resourceName: $filter('sanitize')(name),
+                body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete this user?') + '</div>',
                 action: action,
                 actionText: i18n._('DELETE')
             });

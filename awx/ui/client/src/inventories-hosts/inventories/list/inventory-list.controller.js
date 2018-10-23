@@ -13,7 +13,10 @@
 function InventoriesList($scope,
     $filter, Rest, InventoryList, Prompt,
     ProcessErrors, GetBasePath, Wait, $state,
-    Dataset, canAdd, i18n) {
+    Dataset, canAdd, i18n, Inventory, InventoryHostsStrings,
+    ngToast) {
+
+    let inventory = new Inventory();
 
     let list = InventoryList,
         defaultUrl = GetBasePath('inventory');
@@ -38,6 +41,8 @@ function InventoriesList($scope,
         inventory.host_status_class = "Inventories-hostStatus";
 
         if (inventory.has_inventory_sources) {
+            inventory.copyTip = i18n._('Inventories with sources cannot be copied');
+            inventory.copyClass = "btn-disabled";
             if (inventory.inventory_sources_with_failures > 0) {
                 inventory.syncStatus = 'error';
                 inventory.syncTip = inventory.inventory_sources_with_failures + i18n._(' sources with sync failures. Click for details');
@@ -48,6 +53,8 @@ function InventoriesList($scope,
             }
         }
         else {
+            inventory.copyTip = i18n._('Copy Inventory');
+            inventory.copyClass = "";
             inventory.syncStatus = 'na';
             inventory.syncTip = i18n._('Not configured for inventory sync.');
             inventory.launch_class = "btn-disabled";
@@ -67,14 +74,46 @@ function InventoriesList($scope,
         }
 
         inventory.kind_label = inventory.kind === '' ? 'Inventory' : (inventory.kind === 'smart' ? i18n._('Smart Inventory'): i18n._('Inventory'));
+
+        inventory.linkToDetails = (inventory.kind && inventory.kind === 'smart') ? `inventories.editSmartInventory({smartinventory_id:${inventory.id}})` : `inventories.edit({inventory_id:${inventory.id}})`;
     }
 
-    $scope.editInventory = function (inventory) {
+    $scope.copyInventory = inventory => {
+        if (!inventory.has_inventory_sources) {
+            Wait('start');
+            new Inventory('get', inventory.id)
+                .then(model => model.copy())
+                .then(copiedInv => {
+                    ngToast.success({
+                        content: `
+                            <div class="Toast-wrapper">
+                                <div class="Toast-icon">
+                                    <i class="fa fa-check-circle Toast-successIcon"></i>
+                                </div>
+                                <div>
+                                    ${InventoryHostsStrings.get('SUCCESSFUL_CREATION', copiedInv.name)}
+                                </div>
+                            </div>`,
+                        dismissButton: false,
+                        dismissOnTimeout: true
+                    });
+                    $state.go('.', null, { reload: true });
+                })
+                .catch(({ data, status }) => {
+                    const params = { hdr: 'Error!', msg: `Call to copy failed. Return status: ${status}` };
+                    ProcessErrors($scope, data, status, null, params);
+                })
+                .finally(() => Wait('stop'));
+        }
+    };
+
+    $scope.editInventory = function (inventory, reload) {
+        const goOptions = reload ? { reload: true } : null;
         if(inventory.kind && inventory.kind === 'smart') {
-            $state.go('inventories.editSmartInventory', {smartinventory_id: inventory.id});
+            $state.go('inventories.editSmartInventory', {smartinventory_id: inventory.id}, goOptions);
         }
         else {
-            $state.go('inventories.edit', {inventory_id: inventory.id});
+            $state.go('inventories.edit', {inventory_id: inventory.id}, goOptions);
         }
     };
 
@@ -83,25 +122,45 @@ function InventoriesList($scope,
             var url = defaultUrl + id + '/';
             Wait('start');
             $('#prompt-modal').modal('hide');
-            Rest.setUrl(url);
-            Rest.destroy()
-                .success(function () {
+            inventory.request('delete', id)
+                .then(() => {
                     Wait('stop');
                 })
-                .error(function (data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors( $scope, data, status, null, { hdr: 'Error!',
                         msg: 'Call to ' + url + ' failed. DELETE returned status: ' + status
                     });
                 });
         };
 
-        Prompt({
-            hdr: 'Delete',
-            body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete the inventory below?') + '</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(name) + '</div>' +
-                    '<div class="Prompt-bodyNote"><span class="Prompt-bodyNote--emphasis">Note:</span> ' + i18n._('The inventory will be in a pending status until the final delete is processed.') + '</div>',
-            action: action,
-            actionText: i18n._('DELETE')
-        });
+        inventory.getDependentResourceCounts(id)
+            .then((counts) => {
+                const invalidateRelatedLines = [];
+                let deleteModalBody = `<div class="Prompt-bodyQuery">${InventoryHostsStrings.get('deleteResource.CONFIRM', 'inventory')}</div>`;
+
+                counts.forEach(countObj => {
+                    if(countObj.count && countObj.count > 0) {
+                        invalidateRelatedLines.push(`<div><span class="Prompt-warningResourceTitle">${countObj.label}</span><span class="badge List-titleBadge">${countObj.count}</span></div>`);
+                    }
+                });
+
+                if (invalidateRelatedLines && invalidateRelatedLines.length > 0) {
+                    deleteModalBody = `<div class="Prompt-bodyQuery">${InventoryHostsStrings.get('deleteResource.USED_BY', 'inventory')} ${InventoryHostsStrings.get('deleteResource.CONFIRM', 'inventory')}</div>`;
+                    invalidateRelatedLines.forEach(invalidateRelatedLine => {
+                        deleteModalBody += invalidateRelatedLine;
+                    });
+                }
+
+                deleteModalBody += '<div class="Prompt-bodyNote"><span class="Prompt-bodyNote--emphasis">Note:</span> ' + i18n._('The inventory will be in a pending status until the final delete is processed.') + '</div>';
+
+                Prompt({
+                    hdr: i18n._('Delete'),
+                    resourceName: $filter('sanitize')(name),
+                    body: deleteModalBody,
+                    action: action,
+                    actionText: 'DELETE'
+                });
+            });
     };
 
     $scope.$on(`ws-inventories`, function(e, data){
@@ -112,13 +171,13 @@ function InventoriesList($scope,
         if (data.status === 'deleted') {
             let reloadListStateParams = null;
 
-            if($scope.inventories.length === 1 && $state.params.inventory_search && !_.isEmpty($state.params.inventory_search.page) && $state.params.inventory_search.page !== '1') {
+            if($scope.inventories.length === 1 && $state.params.inventory_search && _.has($state, 'params.inventory_search.page') && $state.params.inventory_search.page !== '1') {
                 reloadListStateParams = _.cloneDeep($state.params);
                 reloadListStateParams.inventory_search.page = (parseInt(reloadListStateParams.inventory_search.page)-1).toString();
             }
 
-            if (parseInt($state.params.inventory_id) === data.inventory_id) {
-                $state.go("^", reloadListStateParams, {reload: true});
+            if (parseInt($state.params.inventory_id) === data.inventory_id || parseInt($state.params.smartinventory_id) === data.inventory_id) {
+                $state.go("inventories", reloadListStateParams, {reload: true});
             } else {
                 $state.go('.', reloadListStateParams, {reload: true});
             }
@@ -129,5 +188,6 @@ function InventoriesList($scope,
 export default ['$scope',
     '$filter', 'Rest', 'InventoryList', 'Prompt',
     'ProcessErrors', 'GetBasePath', 'Wait',
-    '$state', 'Dataset', 'canAdd', 'i18n', InventoriesList
+    '$state', 'Dataset', 'canAdd', 'i18n', 'InventoryModel',
+    'InventoryHostsStrings', 'ngToast', InventoriesList
 ];

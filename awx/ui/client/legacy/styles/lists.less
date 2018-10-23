@@ -19,7 +19,6 @@ table, tbody {
     width: 100%;
     margin-top: 20px;
     table-layout: fixed;
-    overflow: hidden;
 }
 
 .List-tableHeader{
@@ -70,11 +69,7 @@ table, tbody {
 }
 
 .List-tableRow--selected {
-    border-left: 10px solid @list-row-select-bord;
-}
-
-.List-tableRow--selected > :first-child {
-    padding-left: 10px;
+    border-left: 5px solid @list-row-select-bord;
 }
 
 .List-tableRow--disabled {
@@ -96,6 +91,25 @@ table, tbody {
         color: @default-err;
         font-size: 11px;
         text-transform: uppercase;
+    }
+}
+
+.List-tableRow--invalid {
+    height: 40px;
+}
+
+.List-tableRow--invalidBar {
+    align-items: center;
+    border-left: solid @at-space-2x @at-color-error;
+    color: @at-white;
+    display: flex;
+    height: 100%;
+    justify-content: center;
+    position: relative;
+
+    i {
+        position: absolute;
+        left: -7px;
     }
 }
 
@@ -124,7 +138,8 @@ table, tbody {
     color: @list-action-icon;
     background-color: @list-actn-bg;
     border: none;
-    border-radius: 50%;
+    border-radius: 4px;
+    margin-left: 15px;
 }
 
 .List-actionButton:hover {
@@ -132,12 +147,16 @@ table, tbody {
     color: @list-actn-icn-hov;
 }
 
-.List-actionButton--delete:hover {
-    background-color: @list-actn-del-bg-hov !important;
+.List-actionButton + .btn-disabled {
+    &:hover {
+        color: @default-icon-hov;
+        background-color: @list-actn-bg !important;
+    }
+    color: @default-icon-hov;
 }
 
-.List-actionButton + .List-actionButton {
-    margin-left: 15px;
+.List-actionButton--delete:hover {
+    background-color: @list-actn-del-bg-hov !important;
 }
 
 .List-header {
@@ -203,12 +222,15 @@ table, tbody {
 }
 
 .List-actionHolder--leftAlign {
-    width: 50%;
-    margin-left: 50%;
+    margin-left: 52%;
     justify-content: flex-start;
+    button {
+       height: 34px;
+    }
 }
 
 .List-actions {
+    align-items: center;
     display: flex;
     margin-bottom: -34px;
 }
@@ -222,10 +244,6 @@ table, tbody {
 
 .List-auxActionStream {
     width: 200px;
-}
-
-.List-action:not(.ng-hide) ~ .List-action:not(.ng-hide) {
-    margin-left: 20px;
 }
 
 .List-buttonSubmit {
@@ -243,6 +261,8 @@ table, tbody {
     background-color: @btn-bg;
     color: @btn-txt;
     border-color: @b7grey;
+    height: 30px;
+    line-height: 14px;
 }
 
 .List-buttonDefault:hover,
@@ -252,8 +272,7 @@ table, tbody {
 }
 
 .List-buttonDefault[disabled] {
-    color: @d7grey;
-    border-color: @d7grey;
+    opacity: 0.65;
 }
 
 .List-searchDropdown {
@@ -379,7 +398,7 @@ table, tbody {
 }
 
 .List-staticColumn--mediumStatus {
-    width: 51px;
+    width: 52px;
     padding-right: 0px!important;
 }
 
@@ -390,6 +409,11 @@ table, tbody {
 
 .List-staticColumn--schedulerTime {
     max-width: 164px;
+}
+
+.List-staticColumn--invalidBar {
+    width: 10px;
+    padding-right: 0px!important;
 }
 
 .List-staticColumnAdjacent {
@@ -448,16 +472,6 @@ table, tbody {
 .List-dropdownSuccess:focus {
     color: @submit-button-text;
     background-color: @submit-button-bg-hov;
-}
-
-.List-dropdownCarat {
-    display: inline-block;
-    width: 0;
-    height: 0;
-    vertical-align: middle;
-    border-top: 4px dashed;
-    border-right: 4px solid transparent;
-    border-left: 4px solid transparent;
 }
 
 .List-infoCell {

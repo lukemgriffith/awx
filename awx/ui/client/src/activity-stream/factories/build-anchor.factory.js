@@ -20,10 +20,10 @@ export default function BuildAnchor($log, $filter) {
                      if (activity.operation === 'create' || activity.operation === 'delete'){
                          // the API formats the changes.inventory field as str 'myInventoryName-PrimaryKey'
                          var inventory_id = _.last(activity.changes.inventory.split('-'));
-                         url += 'inventories/' + inventory_id + '/groups/edit/' + activity.changes.id;
+                         url += 'inventories/inventory/' + inventory_id + '/groups/edit/' + activity.changes.id;
                      }
                      else {
-                         url += 'inventories/' + activity.summary_fields.inventory[0].id + '/groups/edit/' + (activity.changes.id || activity.changes.object1_pk);
+                         url += 'inventories/inventory/' + activity.summary_fields.inventory[0].id + '/groups/edit/' + (activity.changes.id || activity.changes.object1_pk);
                      }
                      break;
                  case 'host':
@@ -33,12 +33,12 @@ export default function BuildAnchor($log, $filter) {
                      url += 'jobs/' + obj.id;
                      break;
                  case 'inventory':
-                     url += 'inventories/' + obj.id + '/';
+                     url += obj.kind && obj.kind === "smart" ? 'inventories/smart/' + obj.id + '/' : 'inventories/inventory/' + obj.id + '/';
                      break;
                  case 'schedule':
                      // schedule urls depend on the resource they're associated with
                      if (activity.summary_fields.job_template){
-                         url += 'job_templates/' + activity.summary_fields.job_template.id + '/schedules/' + obj.id;
+                         url += 'templates/job_template/' + activity.summary_fields.job_template.id + '/schedules/' + obj.id;
                      }
                      else if (activity.summary_fields.project){
                          url += 'projects/' + activity.summary_fields.project.id + '/schedules/' + obj.id;
@@ -51,6 +51,19 @@ export default function BuildAnchor($log, $filter) {
                          throw {name : 'NotImplementedError', message : 'activity.summary_fields to build this url not implemented yet'};
                      }
                      break;
+                case 'setting':
+                    if (activity.summary_fields.setting[0].category === 'jobs' ||
+                        activity.summary_fields.setting[0].category === 'ui') {
+                        url += `settings/${activity.summary_fields.setting[0].category}`;
+                    }
+                    else if (activity.summary_fields.setting[0].category === 'system' ||
+                        activity.summary_fields.setting[0].category === 'logging') {
+                        url += `settings/system`;
+                    }
+                    else {
+                        url += `settings/auth`;
+                    }
+                     break;
                  case 'notification_template':
                      url += `notification_templates/${obj.id}`;
                      break;
@@ -62,10 +75,30 @@ export default function BuildAnchor($log, $filter) {
                  case 'workflow_job_template':
                      url += `templates/workflow_job_template/${obj.id}`;
                      break;
+                 case 'workflow_job':
+                     url += `workflows/${obj.id}`;
+                     break;
+                 case 'label':
+                     url = null;
+                     break;
+                 case 'inventory_source':
+                     const inventoryId = _.get(obj, 'inventory', '').split('-').reverse()[0];
+                     url += `inventories/inventory/${inventoryId}/inventory_sources/edit/${obj.id}`;
+                     break;
+                 case 'o_auth2_application':
+                     url += `applications/${obj.id}`;
+                     break;
                  default:
                      url += resource + 's/' + obj.id + '/';
              }
-             return ' <a href=\"' + url + '\"> ' + $filter('sanitize')(obj.name || obj.username) + ' </a> ';
+
+             const name = $filter('sanitize')(obj.name || obj.username);
+
+             if (url) {
+                return ` <a href=\"${url}\"> ${name} </a> `;
+             }
+
+             return ` <span> ${name} </span> `;
          }
          catch(err){
              $log.debug(err);

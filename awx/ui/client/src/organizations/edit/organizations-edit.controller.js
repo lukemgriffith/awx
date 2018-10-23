@@ -4,12 +4,12 @@
  * All Rights Reserved
  *************************************************/
 
-export default ['$scope', '$location', '$stateParams',
-    'OrganizationForm', 'Rest', 'ProcessErrors', 'Prompt',
-    'GetBasePath', 'Wait', '$state', 'ToggleNotification', 'CreateSelect2', 'InstanceGroupsService', 'InstanceGroupsData',
-    function($scope, $location, $stateParams,
-        OrganizationForm, Rest, ProcessErrors, Prompt,
-        GetBasePath, Wait, $state, ToggleNotification, CreateSelect2, InstanceGroupsService, InstanceGroupsData) {
+export default ['$scope', '$location', '$stateParams', 'OrgAdminLookup',
+    'OrganizationForm', 'Rest', 'ProcessErrors', 'Prompt', '$rootScope',
+    'GetBasePath', 'Wait', '$state', 'ToggleNotification', 'CreateSelect2', 'InstanceGroupsService', 'InstanceGroupsData', 'ConfigData',
+    function($scope, $location, $stateParams, OrgAdminLookup,
+        OrganizationForm, Rest, ProcessErrors, Prompt, $rootScope,
+        GetBasePath, Wait, $state, ToggleNotification, CreateSelect2, InstanceGroupsService, InstanceGroupsData, ConfigData) {
 
         let form = OrganizationForm(),
             defaultUrl = GetBasePath('organizations'),
@@ -21,6 +21,17 @@ export default ['$scope', '$location', '$stateParams',
         init();
 
         function init() {
+            OrgAdminLookup.checkForAdminAccess({organization: id})
+                .then(function(isOrgAdmin){
+                    $scope.isOrgAdmin = isOrgAdmin;
+                });
+
+            Rest.setUrl(GetBasePath('users') + $rootScope.current_user.id + '/roles/?role_field=notification_admin_role');
+            Rest.get()
+                .then(({data}) => {
+                    $scope.isNotificationAdmin = (data.count && data.count > 0);
+                });
+
             $scope.$watch('organization_obj.summary_fields.user_capabilities.edit', function(val) {
                 if (val === false) {
                     $scope.canAdd = false;
@@ -29,6 +40,11 @@ export default ['$scope', '$location', '$stateParams',
 
             $scope.$emit("HideOrgListHeader");
             $scope.instance_groups = InstanceGroupsData;
+            const virtualEnvs = ConfigData.custom_virtualenvs || [];
+            $scope.custom_virtualenvs_visible = virtualEnvs.length > 1;
+            $scope.custom_virtualenvs_options = virtualEnvs.filter(
+                v => !/\/ansible\/$/.test(v)
+            );
         }
 
 
@@ -36,20 +52,26 @@ export default ['$scope', '$location', '$stateParams',
         Wait('start');
         Rest.setUrl(defaultUrl + id + '/');
         Rest.get()
-            .success(function(data) {
-                let fld;
+        .then(({data}) => {
+            let fld;
 
-                $scope.organization_name = data.name;
-                for (fld in form.fields) {
-                    if (data[fld]) {
-                        $scope[fld] = data[fld];
-                        master[fld] = data[fld];
-                    }
+            $scope.organization_name = data.name;
+            for (fld in form.fields) {
+                if (data[fld]) {
+                    $scope[fld] = data[fld];
+                    master[fld] = data[fld];
                 }
+            }
 
-                $scope.organization_obj = data;
-                $scope.$emit('organizationLoaded');
-                Wait('stop');
+            CreateSelect2({
+                element: '#organization_custom_virtualenv',
+                multiple: false,
+                opts: $scope.custom_virtualenvs_options
+            });
+
+            $scope.organization_obj = data;
+            $scope.$emit('organizationLoaded');
+            Wait('stop');
         });
 
         $scope.toggleNotification = function(event, id, column) {
@@ -124,10 +146,10 @@ export default ['$scope', '$location', '$stateParams',
                 var url = defaultUrl + $stateParams.organization_id + '/' + set + '/';
                 Rest.setUrl(url);
                 Rest.post({ id: itm_id, disassociate: 1 })
-                    .success(function() {
+                    .then(() => {
                         $('#prompt-modal').modal('hide');
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         $('#prompt-modal').modal('hide');
                         ProcessErrors($scope, data, status, null, {
                             hdr: 'Error!',

@@ -6,10 +6,10 @@
 
 export default ['Rest', 'Wait',
     'CredentialTypesForm', 'ProcessErrors', 'GetBasePath',
-    'GenerateForm',  '$scope', '$state', 'Alert', 'GetChoices', 'ParseTypeChange', 'ToJSON', 'CreateSelect2',
+    'GenerateForm',  '$scope', '$state', 'Alert', 'GetChoices', 'ParseTypeChange', 'ToJSON', 'CreateSelect2', 'i18n',
     function(Rest, Wait,
         CredentialTypesForm, ProcessErrors, GetBasePath,
-        GenerateForm, $scope, $state, Alert, GetChoices, ParseTypeChange, ToJSON, CreateSelect2
+        GenerateForm, $scope, $state, Alert, GetChoices, ParseTypeChange, ToJSON, CreateSelect2, i18n
     ) {
         var form = CredentialTypesForm,
             url = GetBasePath('credential_types');
@@ -37,8 +37,14 @@ export default ['Rest', 'Wait',
                         callback: 'loadCredentialKindOptions'
                     });
 
-                    $scope.inputs_help_text = _.get(options, 'actions.POST.inputs.help_text', "Specification for credential type inputs");
-                    $scope.injectors_help_text = _.get(options, 'actions.POST.injectors.help_text', "Specification for credential type injector");
+                    const docs_url = 'https://docs.ansible.com/ansible-tower/latest/html/userguide/credential_types.html#getting-started-with-credential-types';
+                    const docs_help_text = `<br><br><a href=${docs_url}>${i18n._('Getting Started with Credential Types')}</a>`;
+
+                    const api_inputs_help_text = _.get(options, 'actions.POST.inputs.help_text', "Specification for credential type inputs.");
+                    const api_injectors_help_text = _.get(options, 'actions.POST.injectors.help_text', "Specification for credential type injector.");
+
+                    $scope.inputs_help_text = api_inputs_help_text + docs_help_text;
+                    $scope.injectors_help_text = api_injectors_help_text + docs_help_text;
 
                     if (!options.actions.POST) {
                         $state.go("^");
@@ -99,11 +105,11 @@ export default ['Rest', 'Wait',
                     inputs: inputs,
                     injectors: injectors
                 })
-                .success(function(data) {
+                .then(({data}) => {
                     $state.go('credentialTypes.edit', { credential_type_id: data.id }, { reload: true });
                     Wait('stop');
                 })
-                .error(function(data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, form, {
                         hdr: 'Error!',
                         msg: 'Failed to add new credential type. PUT returned status: ' + status

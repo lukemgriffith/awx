@@ -19,6 +19,7 @@ export default ['i18n', function(i18n) {
         basePath: 'inventory',
         title: false,
         disableRow: "{{ inventory.pending_deletion }}",
+        disableRowValue: 'inventory.pending_deletion',
 
         fields: {
             status: {
@@ -49,7 +50,7 @@ export default ['i18n', function(i18n) {
                 modalColumnClass: 'col-md-12',
                 awToolTip: "{{ inventory.description | sanitize }}",
                 awTipPlacement: "top",
-                ngClick: 'editInventory(inventory)'
+                uiSref: '{{inventory.linkToDetails}}'
             },
             kind: {
                 label: i18n._('Type'),
@@ -73,8 +74,8 @@ export default ['i18n', function(i18n) {
                 type: 'buttonDropdown',
                 basePaths: ['inventories'],
                 awToolTip: i18n._('Create a new inventory'),
-                actionClass: 'btn List-dropdownSuccess',
-                buttonContent: '&#43; ' + i18n._('ADD'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 options: [
                     {
                         optionContent: i18n._('Inventory'),
@@ -99,6 +100,15 @@ export default ['i18n', function(i18n) {
                 awToolTip: i18n._('Edit inventory'),
                 dataPlacement: 'top',
                 ngShow: '!inventory.pending_deletion && inventory.summary_fields.user_capabilities.edit'
+            },
+            copy: {
+                label: i18n._('Copy'),
+                ngClick: 'copyInventory(inventory)',
+                awToolTip: "{{ inventory.copyTip }}",
+                dataTipWatch: "inventory.copyTip",
+                dataPlacement: 'top',
+                ngShow: '!inventory.pending_deletion && inventory.summary_fields.user_capabilities.copy',
+                ngClass: 'inventory.copyClass'
             },
             view: {
                 label: i18n._('View'),

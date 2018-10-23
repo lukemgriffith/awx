@@ -15,7 +15,7 @@
         hover: true,
         multiSelect: true,
         trackBy: 'group.id',
-        basePath:  'api/v2/inventories/{{$stateParams.inventory_id}}/root_groups/',
+        basePath:  'api/v2/inventories/{{$stateParams.inventory_id}}/groups/',
 
         fields: {
             failed_hosts: {
@@ -31,7 +31,7 @@
             name: {
                 label: i18n._('Groups'),
                 key: true,
-                ngClick: "goToGroupGroups(group.id)",
+                uiSref: "inventories.edit.groups.edit({group_id:group.id})",
                 columnClass: 'col-lg-6 col-md-6 col-sm-6 col-xs-6',
                 class: 'InventoryManage-breakWord',
             }
@@ -67,8 +67,8 @@
                 mode: 'all',
                 ngClick: "createGroup()",
                 awToolTip: i18n._("Create a new group"),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD GROUP'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: 'canAdd',
                 dataPlacement: "top",
             }

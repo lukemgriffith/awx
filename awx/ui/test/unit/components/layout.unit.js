@@ -1,6 +1,7 @@
 describe('Components | Layout', () => {
     let $compile;
     let $rootScope;
+    let $httpBackend;
     let element;
     let scope;
 
@@ -10,11 +11,14 @@ describe('Components | Layout', () => {
         angular.mock.module('ui.router');
         angular.mock.module('at.lib.services');
         angular.mock.module('at.lib.components');
+        angular.mock.module('Utilities');
+        angular.mock.module('ngCookies');
     });
 
-    beforeEach(angular.mock.inject((_$compile_, _$rootScope_) => {
+    beforeEach(angular.mock.inject((_$compile_, _$rootScope_, _$httpBackend_) => {
         $compile = _$compile_;
         $rootScope = _$rootScope_;
+        $httpBackend = _$httpBackend_;
         scope = $rootScope.$new();
 
         element = angular.element('<at-layout></at-layout>');
@@ -26,7 +30,24 @@ describe('Components | Layout', () => {
         let controller;
 
         beforeEach(() => {
+            const mockOrgAdminResponse = {
+                data: {
+                    count: 3
+                }
+            };
+
+            const mockNotificationAdminResponse = {
+                data: {
+                    count: 1
+                }
+            };
+
             controller = element.controller('atLayout');
+            $httpBackend.when('GET', /admin_of_organizations/)
+                .respond(mockOrgAdminResponse);
+
+            $httpBackend.when('GET', /roles\/\?role_field=notification_admin_role/)
+                .respond(mockNotificationAdminResponse);
         });
 
         xit('$scope.$on($stateChangeSuccess) should assign toState name to currentState', () => {
@@ -130,8 +151,8 @@ describe('Components | Layout', () => {
                 expect(_ComponentsStrings_.get).toHaveBeenCalled();
             }));
 
-            it('ComponentsStrings get() method should throw an error if string is not a property name of the layout class', () => {
-                expect(controller.getString.bind(null, 'SUBMISSION_ERROR_TITLE')).toThrow();
+            it('ComponentsStrings get() method should return undefined if string is not a property name of the layout class', () => {
+                expect(controller.getString('SUBMISSION_ERROR_TITLE')).toBe(undefined);
             });
 
             it('should return layout string', () => {
@@ -142,16 +163,6 @@ describe('Components | Layout', () => {
                 };
 
                 _.forEach(layoutStrings, (value, key) => {
-                    expect(controller.getString(key)).toBe(value);
-                });
-            });
-
-            it('should return default string', () => {
-                const defaultStrings = {
-                    BRAND_NAME: 'AWX'
-                };
-
-                _.forEach(defaultStrings, (value, key) => {
                     expect(controller.getString(key)).toBe(value);
                 });
             });

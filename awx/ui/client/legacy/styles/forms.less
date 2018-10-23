@@ -102,6 +102,10 @@
     flex-wrap:wrap;
 }
 
+.Form-tabHolder--licenseSelected {
+    margin-bottom: -20px;
+}
+
 .Form-tabs {
     flex: 1 0 auto;
     display: flex;
@@ -355,7 +359,7 @@
 .Form-numberInputButton {
     color: @default-icon!important;
     font-size: 14px;
-
+    display: block;
 }
 
 .Form-dropDown {
@@ -458,7 +462,6 @@
     align-items: center;
     justify-content: center;
     border:1px solid @field-border;
-    border-right: 0px;
 }
 
 .Form-lookupButton:hover {
@@ -470,7 +473,6 @@
 .Form-lookupButton:active,
 .Form-lookupButton:focus {
     border: 1px solid @field-border;
-    border-right: 0px;
 }
 
 .CodeMirror {
@@ -628,9 +630,18 @@ input[type='radio']:checked:before {
     background-color: @submit-button-bg-dis;
 }
 
+.Form-saveButton--disabled {
+    background-color: @submit-button-bg-dis;
+    cursor: not-allowed;
+}
+
 .Form-saveButton:hover, .Form-launchButton:hover {
     background-color: @submit-button-bg-hov;
     color: @submit-button-text;
+}
+
+.Form-saveButton--disabled:hover {
+    background-color: @submit-button-bg-dis;
 }
 
 .Form-cancelButton {
@@ -668,6 +679,10 @@ input[type='radio']:checked:before {
 
 .Form-primaryButton.Form-tab--disabled:hover {
     background-color: @default-link;
+}
+
+.Form-primaryButton--noMargin {
+    margin-right: 0px;
 }
 
 .Form-formGroup--singleColumn {
@@ -772,4 +787,9 @@ input[type='radio']:checked:before {
 .form-control[disabled], .form-control[readonly], fieldset[disabled] .form-control {
     border-color: @b7grey;
     background-color: @ebgrey;
+}
+
+.Form-checkboxRow {
+    display: flex;
+    clear: left;
 }

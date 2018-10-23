@@ -1,6 +1,7 @@
 const templateUrl = require('~components/panel/heading.partial.html');
 
 function link (scope, el, attrs, panel) {
+    scope.hideDismiss = Boolean(attrs.hideDismiss);
     panel.use(scope);
 }
 
@@ -11,7 +12,11 @@ function atPanelHeading () {
         replace: true,
         transclude: true,
         templateUrl,
-        link
+        link,
+        scope: {
+            title: '@',
+            badge: '@?'
+        }
     };
 }
 

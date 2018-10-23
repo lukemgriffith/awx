@@ -16,6 +16,7 @@ from awx.main.models import (
 
 # other AWX
 from awx.main.utils import model_to_dict
+from awx.main.utils.common import get_allowed_fields
 from awx.api.serializers import InventorySourceSerializer
 
 # Django
@@ -54,12 +55,11 @@ class TestImplicitRolesOmitted:
         assert qs[1].operation == 'delete'
 
     @pytest.mark.django_db
-    def test_activity_stream_create_JT(self, project, inventory, credential):
+    def test_activity_stream_create_JT(self, project, inventory):
         JobTemplate.objects.create(
             name='test-jt',
             project=project,
             inventory=inventory,
-            credential=credential
         )
         qs = ActivityStream.objects.filter(job_template__isnull=False)
         assert qs.count() == 1
@@ -182,3 +182,46 @@ def test_annon_user_action():
         inv = Inventory.objects.create(name='ainventory')
     entry = inv.activitystream_set.filter(operation='create').first()
     assert not entry.actor
+
+
+@pytest.mark.django_db
+def test_activity_stream_deleted_actor(alice, bob):
+    alice.first_name = 'Alice'
+    alice.last_name = 'Doe'
+    alice.save()
+    with impersonate(alice):
+        o = Organization.objects.create(name='test organization')
+    entry = o.activitystream_set.get(operation='create')
+    assert entry.actor == alice
+
+    alice.delete()
+    entry = o.activitystream_set.get(operation='create')
+    assert entry.actor is None
+    deleted = entry.deleted_actor
+    assert deleted['username'] == 'alice'
+    assert deleted['first_name'] == 'Alice'
+    assert deleted['last_name'] == 'Doe'
+
+    entry.actor = bob
+    entry.save(update_fields=['actor'])
+    deleted = entry.deleted_actor
+
+    entry = ActivityStream.objects.get(id=entry.pk)
+    assert entry.deleted_actor['username'] == 'bob'
+
+
+@pytest.mark.django_db
+def test_modified_not_allowed_field(somecloud_type):
+    '''
+    If this test fails, that means that read-only fields are showing
+    up in the activity stream serialization of an instance.
+
+    That _probably_ means that you just connected a new model to the
+    activity_stream_registrar, but did not add its serializer to
+    the model->serializer mapping.
+    '''
+    from awx.main.signals import model_serializer_mapping
+    from awx.main.registrar import activity_stream_registrar
+
+    for Model in activity_stream_registrar.models:
+        assert 'modified' not in get_allowed_fields(Model(), model_serializer_mapping), Model

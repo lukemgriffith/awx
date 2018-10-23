@@ -59,6 +59,17 @@ const base = {
         rules: [
             {
                 test: /\.js$/,
+                use: {
+                    loader: 'istanbul-instrumenter-loader',
+                    options: { esModules: true }
+                },
+                enforce: 'pre',
+                include: [
+                    /src\/network-ui\//
+                ]
+            },
+            {
+                test: /\.js$/,
                 loader: 'babel-loader',
                 exclude: /node_modules/,
                 options: {
@@ -90,6 +101,15 @@ const base = {
             },
             {
                 test: /\.html$/,
+                use: ['ngtemplate-loader', 'html-loader'],
+                include: [
+                    /lib\/components\//,
+                    /features\//,
+                    /src\//
+                ]
+            },
+            {
+                test: /\.svg$/,
                 use: ['ngtemplate-loader', 'html-loader'],
                 include: [
                     /lib\/components\//,

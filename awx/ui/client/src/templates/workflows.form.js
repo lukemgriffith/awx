@@ -27,6 +27,16 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
             detailsClick: "$state.go('templates.editWorkflowJobTemplate')",
             include: ['/static/partials/survey-maker-modal.html'],
 
+            headerFields: {
+                missingTemplates: {
+                    type: 'html',
+                    html: `<div ng-show="missingTemplates" class="Workflow-warning">
+                            <span class="Workflow-warningIcon fa fa-warning"></span>` +
+                            i18n._("Missing Job Templates found in the <span class='Workflow-warningLink' ng-click='openWorkflowMaker()'>Workflow Editor</span>") +
+                            `</div>`
+                }
+            },
+
             fields: {
                 name: {
                     label: i18n._('Name'),
@@ -61,13 +71,16 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                 labels: {
                     label: i18n._('Labels'),
                     type: 'select',
-                    class: 'Form-formGroup--fullWidth',
                     ngOptions: 'label.label for label in labelOptions track by label.value',
                     multiSelect: true,
                     dataTitle: i18n._('Labels'),
                     dataPlacement: 'right',
                     awPopOver: "<p>" + i18n._("Optional labels that describe this job template, such as 'dev' or 'test'. Labels can be used to group and filter job templates and completed jobs.") + "</p>",
                     dataContainer: 'body',
+                    onError: {
+                        ngShow: 'workflow_job_template_labels_isValid !== true',
+                        text: i18n._('Max 512 characters per label.'),
+                    },
                     ngDisabled: '!(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)'
                 },
                 variables: {
@@ -82,6 +95,22 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                     dataPlacement: 'right',
                     dataContainer: "body",
                     ngDisabled: '!(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)' // TODO: get working
+                },
+                checkbox_group: {
+                    label: i18n._('Options'),
+                    type: 'checkbox_group',
+                    fields: [{
+                        name: 'allow_simultaneous',
+                        label: i18n._('Enable Concurrent Jobs'),
+                        type: 'checkbox',
+                        column: 2,
+                        awPopOver: "<p>" + i18n._("If enabled, simultaneous runs of this workflow job template will be allowed.") + "</p>",
+                        dataPlacement: 'right',
+                        dataTitle: i18n._('Enable Concurrent Jobs'),
+                        dataContainer: "body",
+                        labelClass: 'stack-inline',
+                        ngDisabled: '!(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)'
+                    }]
                 }
             },
 
@@ -121,8 +150,8 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                             ngClick: "$state.go('.add')",
                             label: i18n._('Add'),
                             awToolTip: i18n._('Add a permission'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; '+ i18n._('ADD'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)'
                         }
                     },
@@ -150,6 +179,16 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                 },
                 "notifications": {
                     include: "NotificationsList"
+                },
+                "completed_jobs": {
+                    title: i18n._('Completed Jobs'),
+                    skipGenerator: true,
+                    ngClick: "$state.go('templates.editWorkflowJobTemplate.completed_jobs')"
+                },
+                "schedules": {
+                    title: i18n._('Schedules'),
+                    skipGenerator: true,
+                    ngClick: "$state.go('templates.editWorkflowJobTemplate.schedules')"
                 }
             },
 
@@ -157,13 +196,13 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                 view_survey: {
                     ngClick: 'editSurvey()',
                     awFeature: 'surveys',
-                    ngShow: '($state.is(\'templates.addWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate\')) && survey_exists && !(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)',
+                    ngShow: '($state.is(\'templates.addWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate.workflowMaker\')) && survey_exists && !(workflow_job_template_obj.summary_fields.user_capabilities.edit || canAddWorkflowJobTemplate)',
                     label: i18n._('View Survey'),
                     class: 'Form-primaryButton'
                 },
                 add_survey: {
                     ngClick: 'addSurvey()',
-                    ngShow: '!survey_exists && ($state.includes(\'templates.addWorkflowJobTemplate\') || $state.includes(\'templates.editWorkflowJobTemplate\'))',
+                    ngShow: '!survey_exists && ($state.is(\'templates.addWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate.workflowMaker\'))',
                     awFeature: 'surveys',
                     awToolTip: '{{surveyTooltip}}',
                     dataPlacement: 'top',
@@ -173,18 +212,18 @@ export default ['NotificationsList', 'i18n', function(NotificationsList, i18n) {
                 edit_survey: {
                     ngClick: 'editSurvey()',
                     awFeature: 'surveys',
-                    ngShow: 'survey_exists && ($state.includes(\'templates.addWorkflowJobTemplate\') || $state.includes(\'templates.editWorkflowJobTemplate\'))',
+                    ngShow: 'survey_exists && ($state.is(\'templates.addWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate.workflowMaker\'))',
                     label: i18n._('Edit Survey'),
                     class: 'Form-primaryButton',
                     awToolTip: '{{surveyTooltip}}',
                     dataPlacement: 'top'
                 },
-                workflow_editor: {
+                workflow_visualizer: {
                     ngClick: 'openWorkflowMaker()',
-                    ngShow: '$state.includes(\'templates.addWorkflowJobTemplate\') || $state.includes(\'templates.editWorkflowJobTemplate\')',
-                    awToolTip: '{{workflowEditorTooltip}}',
+                    ngShow: '$state.is(\'templates.addWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate\') || $state.is(\'templates.editWorkflowJobTemplate.workflowMaker\')',
+                    awToolTip: '{{workflowVisualizerTooltip}}',
                     dataPlacement: 'top',
-                    label: i18n._('Workflow Editor'),
+                    label: i18n._('Workflow Visualizer'),
                     class: 'Form-primaryButton'
                 }
             }

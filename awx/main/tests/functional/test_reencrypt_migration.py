@@ -19,7 +19,7 @@ from awx.conf.migrations._reencrypt import encrypt_field
 from awx.main.migrations._reencrypt import (
     _notification_templates,
     _credentials,
-    _unified_jobs,
+    _unified_jobs
 )
 
 from awx.main.utils import decrypt_field

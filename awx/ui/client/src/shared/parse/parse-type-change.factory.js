@@ -60,7 +60,6 @@ export default
                     onChange: onChange
                 });
             }
-
             // Hide the textarea and show a CodeMirror editor
             createField(onChange, onReady, fld);
 
@@ -95,6 +94,7 @@ export default
                     // convert json to yaml
                     try {
                         removeField(fld);
+                        
                         json_obj = JSON.parse(scope[fld]);
                         if ($.isEmptyObject(json_obj)) {
                             scope[fld] = '---';

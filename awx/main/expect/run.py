@@ -4,7 +4,7 @@ import argparse
 import base64
 import codecs
 import collections
-import cStringIO
+import StringIO
 import logging
 import json
 import os
@@ -18,6 +18,7 @@ import time
 
 import pexpect
 import psutil
+import six
 
 
 logger = logging.getLogger('awx.main.utils.expect')
@@ -47,7 +48,7 @@ def open_fifo_write(path, data):
     This blocks the thread until an external process (such as ssh-agent)
     reads data from the pipe.
     '''
-    os.mkfifo(path, 0600)
+    os.mkfifo(path, 0o600)
     thread.start_new_thread(lambda p, d: open(p, 'w').write(d), (path, data))
 
 
@@ -99,10 +100,15 @@ def run_pexpect(args, cwd, env, logfile,
     password_patterns = expect_passwords.keys()
     password_values = expect_passwords.values()
 
-    logfile_pos = logfile.tell()
+    # pexpect needs all env vars to be utf-8 encoded strings
+    # https://github.com/pexpect/pexpect/issues/512
+    for k, v in env.items():
+        if isinstance(v, six.text_type):
+            env[k] = v.encode('utf-8')
+
     child = pexpect.spawn(
         args[0], args[1:], cwd=cwd, env=env, ignore_sighup=True,
-        encoding='utf-8', echo=False,
+        encoding='utf-8', echo=False, use_poll=True
     )
     child.logfile_read = logfile
     canceled = False
@@ -116,13 +122,11 @@ def run_pexpect(args, cwd, env, logfile,
         password = password_values[result_id]
         if password is not None:
             child.sendline(password)
-        if logfile_pos != logfile.tell():
-            logfile_pos = logfile.tell()
             last_stdout_update = time.time()
         if cancelled_callback:
             try:
                 canceled = cancelled_callback()
-            except:
+            except Exception:
                 logger.exception('Could not check cancel callback - canceling immediately')
                 if isinstance(extra_update_fields, dict):
                     extra_update_fields['job_explanation'] = "System error during job execution, check system logs"
@@ -204,6 +208,12 @@ def run_isolated_job(private_data_dir, secrets, logfile=sys.stdout):
     env['AWX_ISOLATED_DATA_DIR'] = private_data_dir
     env['PYTHONPATH'] = env.get('PYTHONPATH', '') + callback_dir + ':'
 
+    venv_path = env.get('VIRTUAL_ENV')
+    if venv_path and not os.path.exists(venv_path):
+        raise RuntimeError(
+            'a valid Python virtualenv does not exist at {}'.format(venv_path)
+        )
+
     return run_pexpect(args, cwd, env, logfile,
                        expect_passwords=expect_passwords,
                        idle_timeout=idle_timeout,
@@ -243,7 +253,7 @@ def handle_termination(pid, args, proot_cmd, is_cancel=True):
 
 
 def __run__(private_data_dir):
-    buff = cStringIO.StringIO()
+    buff = StringIO.StringIO()
     with open(os.path.join(private_data_dir, 'env'), 'r') as f:
         for line in f:
             buff.write(line)

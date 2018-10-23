@@ -7,6 +7,7 @@ import pytest
 import os
 
 from django.conf import settings
+from kombu.utils.url import parse_url
 
 # Mock
 import mock
@@ -14,7 +15,7 @@ import mock
 # AWX
 from awx.api.versioning import reverse
 from awx.conf.models import Setting
-from awx.main.utils.handlers import BaseHTTPSHandler, LoggingConnectivityException
+from awx.main.utils.handlers import AWXProxyHandler, LoggingConnectivityException
 
 import six
 
@@ -99,6 +100,42 @@ def test_ldap_settings(get, put, patch, delete, admin):
     patch(url, user=admin, data={'AUTH_LDAP_SERVER_URI': 'ldap://ldap.example.com, ldap://ldap2.example.com'}, expect=200)
     patch(url, user=admin, data={'AUTH_LDAP_BIND_DN': 'cn=Manager,dc=example,dc=com'}, expect=200)
     patch(url, user=admin, data={'AUTH_LDAP_BIND_DN': u'cn=暴力膜,dc=大新闻,dc=真的粉丝'}, expect=200)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('value', [
+    None, '', 'INVALID', 1, [1], ['INVALID'],
+])
+def test_ldap_user_flags_by_group_invalid_dn(get, patch, admin, value):
+    url = reverse('api:setting_singleton_detail', kwargs={'category_slug': 'ldap'})
+    patch(url, user=admin,
+          data={'AUTH_LDAP_USER_FLAGS_BY_GROUP': {'is_superuser': value}},
+          expect=400)
+
+
+@pytest.mark.django_db
+def test_ldap_user_flags_by_group_string(get, patch, admin):
+    expected = 'CN=Admins,OU=Groups,DC=example,DC=com'
+    url = reverse('api:setting_singleton_detail', kwargs={'category_slug': 'ldap'})
+    patch(url, user=admin,
+          data={'AUTH_LDAP_USER_FLAGS_BY_GROUP': {'is_superuser': expected}},
+          expect=200)
+    resp = get(url, user=admin)
+    assert resp.data['AUTH_LDAP_USER_FLAGS_BY_GROUP']['is_superuser'] == [expected]
+
+
+@pytest.mark.django_db
+def test_ldap_user_flags_by_group_list(get, patch, admin):
+    expected = [
+        'CN=Admins,OU=Groups,DC=example,DC=com',
+        'CN=Superadmins,OU=Groups,DC=example,DC=com'
+    ]
+    url = reverse('api:setting_singleton_detail', kwargs={'category_slug': 'ldap'})
+    patch(url, user=admin,
+          data={'AUTH_LDAP_USER_FLAGS_BY_GROUP': {'is_superuser': expected}},
+          expect=200)
+    resp = get(url, user=admin)
+    assert resp.data['AUTH_LDAP_USER_FLAGS_BY_GROUP']['is_superuser'] == expected
 
 
 @pytest.mark.parametrize('setting', [
@@ -217,7 +254,7 @@ def test_logging_aggregrator_connection_test_bad_request(get, post, admin, key):
 
 @pytest.mark.django_db
 def test_logging_aggregrator_connection_test_valid(mocker, get, post, admin):
-    with mock.patch.object(BaseHTTPSHandler, 'perform_test') as perform_test:
+    with mock.patch.object(AWXProxyHandler, 'perform_test') as perform_test:
         url = reverse('api:setting_logging_test')
         user_data = {
             'LOG_AGGREGATOR_TYPE': 'logstash',
@@ -227,7 +264,8 @@ def test_logging_aggregrator_connection_test_valid(mocker, get, post, admin):
             'LOG_AGGREGATOR_PASSWORD': 'mcstash'
         }
         post(url, user_data, user=admin, expect=200)
-        create_settings = perform_test.call_args[0][0]
+        args, kwargs = perform_test.call_args_list[0]
+        create_settings = kwargs['custom_settings']
         for k, v in user_data.items():
             assert hasattr(create_settings, k)
             assert getattr(create_settings, k) == v
@@ -238,7 +276,7 @@ def test_logging_aggregrator_connection_test_with_masked_password(mocker, patch,
     url = reverse('api:setting_singleton_detail', kwargs={'category_slug': 'logging'})
     patch(url, user=admin, data={'LOG_AGGREGATOR_PASSWORD': 'password123'}, expect=200)
 
-    with mock.patch.object(BaseHTTPSHandler, 'perform_test') as perform_test:
+    with mock.patch.object(AWXProxyHandler, 'perform_test') as perform_test:
         url = reverse('api:setting_logging_test')
         user_data = {
             'LOG_AGGREGATOR_TYPE': 'logstash',
@@ -248,13 +286,14 @@ def test_logging_aggregrator_connection_test_with_masked_password(mocker, patch,
             'LOG_AGGREGATOR_PASSWORD': '$encrypted$'
         }
         post(url, user_data, user=admin, expect=200)
-        create_settings = perform_test.call_args[0][0]
+        args, kwargs = perform_test.call_args_list[0]
+        create_settings = kwargs['custom_settings']
         assert getattr(create_settings, 'LOG_AGGREGATOR_PASSWORD') == 'password123'
 
 
 @pytest.mark.django_db
 def test_logging_aggregrator_connection_test_invalid(mocker, get, post, admin):
-    with mock.patch.object(BaseHTTPSHandler, 'perform_test') as perform_test:
+    with mock.patch.object(AWXProxyHandler, 'perform_test') as perform_test:
         perform_test.side_effect = LoggingConnectivityException('404: Not Found')
         url = reverse('api:setting_logging_test')
         resp = post(url, {
@@ -304,3 +343,41 @@ def test_isolated_keys_readonly(get, patch, delete, admin, key, expected):
 
     delete(url, user=admin)
     assert getattr(settings, key) == 'secret'
+
+
+@pytest.mark.django_db
+def test_isolated_key_flag_readonly(get, patch, delete, admin):
+    settings.AWX_ISOLATED_KEY_GENERATION = True
+    url = reverse('api:setting_singleton_detail', kwargs={'category_slug': 'jobs'})
+    resp = get(url, user=admin)
+    assert resp.data['AWX_ISOLATED_KEY_GENERATION'] is True
+
+    patch(url, user=admin, data={
+        'AWX_ISOLATED_KEY_GENERATION': False
+    })
+    assert settings.AWX_ISOLATED_KEY_GENERATION is True
+
+    delete(url, user=admin)
+    assert settings.AWX_ISOLATED_KEY_GENERATION is True
+
+
+@pytest.mark.django_db
+def test_default_broker_url():
+    url = parse_url(settings.BROKER_URL)
+    assert url['transport'] == 'amqp'
+    assert url['hostname'] == 'rabbitmq'
+    assert url['userid'] == 'guest'
+    assert url['password'] == 'guest'
+    assert url['virtual_host'] == '/'
+
+
+@pytest.mark.django_db
+def test_broker_url_with_special_characters():
+    settings.BROKER_URL = 'amqp://guest:a@ns:ibl3#@rabbitmq:5672//'
+    url = parse_url(settings.BROKER_URL)
+    assert url['transport'] == 'amqp'
+    assert url['hostname'] == 'rabbitmq'
+    assert url['port'] == 5672
+    assert url['userid'] == 'guest'
+    assert url['password'] == 'a@ns:ibl3#'
+    assert url['virtual_host'] == '/'

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import pytest
 import mock
 
@@ -125,9 +126,8 @@ def test_list_cannot_order_by_unsearchable_field(get, organization, alice, order
         )
         custom_script.admin_role.members.add(alice)
 
-    response = get(reverse('api:inventory_script_list'), alice,
-                   QUERY_STRING='order_by=%s' % order_by, status=400)
-    assert response.status_code == 400
+    get(reverse('api:inventory_script_list'), alice,
+        QUERY_STRING='order_by=%s' % order_by, expect=403)
 
 
 @pytest.mark.parametrize("role_field,expected_status_code", [
@@ -236,6 +236,51 @@ def test_create_inventory_smart_inventory_sources(post, get, inventory, admin_us
     assert jdata['count'] == 0
 
 
+@pytest.mark.django_db
+def test_urlencode_host_filter(post, admin_user, organization):
+    """
+    Host filters saved on the model must correspond to the same result
+    as when that host_filter is used in the URL as a querystring.
+    That means that it must be url-encoded patterns like %22 for quotes
+    must be escaped as the string is saved to the model.
+
+    Expected host filter in this test would match a host such as:
+    inventory.hosts.create(
+        ansible_facts={"ansible_distribution_version": "7.4"}
+    )
+    """
+    # Create smart inventory with host filter that corresponds to querystring
+    post(
+        reverse('api:inventory_list'),
+        data={
+            'name': 'smart inventory', 'kind': 'smart',
+            'organization': organization.pk,
+            'host_filter': 'ansible_facts__ansible_distribution_version=%227.4%22'
+        },
+        user=admin_user,
+        expect=201
+    )
+    # Assert that the saved version of host filter has escaped ""
+    si = Inventory.objects.get(name='smart inventory')
+    assert si.host_filter == 'ansible_facts__ansible_distribution_version="7.4"'
+
+
+@pytest.mark.django_db
+def test_host_filter_unicode(post, admin_user, organization):
+    post(
+        reverse('api:inventory_list'),
+        data={
+            'name': 'smart inventory', 'kind': 'smart',
+            'organization': organization.pk,
+            'host_filter': u'ansible_facts__ansible_distribution=レッドハット'
+        },
+        user=admin_user,
+        expect=201
+    )
+    si = Inventory.objects.get(name='smart inventory')
+    assert si.host_filter == u'ansible_facts__ansible_distribution=レッドハット'
+
+
 @pytest.mark.parametrize("role_field,expected_status_code", [
     (None, 403),
     ('admin_role', 201),
@@ -318,6 +363,116 @@ def test_inventory_source_vars_prohibition(post, inventory, admin_user):
                  admin_user, expect=400)
     assert 'prohibited environment variable' in r.data['source_vars'][0]
     assert 'FOOBAR' in r.data['source_vars'][0]
+
+
+@pytest.mark.django_db
+class TestInventorySourceCredential:
+    def test_need_cloud_credential(self, inventory, admin_user, post):
+        """Test that a cloud-based source requires credential"""
+        r = post(
+            url=reverse('api:inventory_source_list'),
+            data={'inventory': inventory.pk, 'name': 'foo', 'source': 'openstack'},
+            expect=400,
+            user=admin_user
+        )
+        assert 'Credential is required for a cloud source' in r.data['credential'][0]
+
+    def test_ec2_no_credential(self, inventory, admin_user, post):
+        """Test that an ec2 inventory source can be added with no credential"""
+        post(
+            url=reverse('api:inventory_source_list'),
+            data={'inventory': inventory.pk, 'name': 'fobar', 'source': 'ec2'},
+            expect=201,
+            user=admin_user
+        )
+
+    def test_validating_credential_type(self, organization, inventory, admin_user, post):
+        """Test that cloud sources must use their respective credential type"""
+        from awx.main.models.credential import Credential, CredentialType
+        openstack = CredentialType.defaults['openstack']()
+        openstack.save()
+        os_cred = Credential.objects.create(
+            credential_type=openstack, name='bar', organization=organization)
+        r = post(
+            url=reverse('api:inventory_source_list'),
+            data={
+                'inventory': inventory.pk, 'name': 'fobar', 'source': 'ec2',
+                'credential': os_cred.pk
+            },
+            expect=400,
+            user=admin_user
+        )
+        assert 'Cloud-based inventory sources (such as ec2)' in r.data['credential'][0]
+        assert 'require credentials for the matching cloud service' in r.data['credential'][0]
+
+    def test_vault_credential_not_allowed(self, project, inventory, vault_credential, admin_user, post):
+        """Vault credentials cannot be associated via the deprecated field"""
+        # TODO: when feature is added, add tests to use the related credentials
+        # endpoint for multi-vault attachment
+        r = post(
+            url=reverse('api:inventory_source_list'),
+            data={
+                'inventory': inventory.pk, 'name': 'fobar', 'source': 'scm',
+                'source_project': project.pk, 'source_path': '',
+                'credential': vault_credential.pk
+            },
+            expect=400,
+            user=admin_user
+        )
+        assert 'Credentials of type insights and vault' in r.data['credential'][0]
+        assert 'disallowed for scm inventory sources' in r.data['credential'][0]
+
+    def test_vault_credential_not_allowed_via_related(
+            self, project, inventory, vault_credential, admin_user, post):
+        """Vault credentials cannot be associated via related endpoint"""
+        inv_src = InventorySource.objects.create(
+            inventory=inventory, name='foobar', source='scm',
+            source_project=project, source_path=''
+        )
+        r = post(
+            url=reverse('api:inventory_source_credentials_list', kwargs={'pk': inv_src.pk}),
+            data={
+                'id': vault_credential.pk
+            },
+            expect=400,
+            user=admin_user
+        )
+        assert 'Credentials of type insights and vault' in r.data['msg']
+        assert 'disallowed for scm inventory sources' in r.data['msg']
+
+    def test_credentials_relationship_mapping(self, project, inventory, organization, admin_user, post, patch):
+        """The credentials relationship is used to manage the cloud credential
+        this test checks that replacement works"""
+        from awx.main.models.credential import Credential, CredentialType
+        openstack = CredentialType.defaults['openstack']()
+        openstack.save()
+        os_cred = Credential.objects.create(
+            credential_type=openstack, name='bar', organization=organization)
+        r = post(
+            url=reverse('api:inventory_source_list'),
+            data={
+                'inventory': inventory.pk, 'name': 'fobar', 'source': 'scm',
+                'source_project': project.pk, 'source_path': '',
+                'credential': os_cred.pk
+            },
+            expect=201,
+            user=admin_user
+        )
+        aws = CredentialType.defaults['aws']()
+        aws.save()
+        aws_cred = Credential.objects.create(
+            credential_type=aws, name='bar2', organization=organization)
+        inv_src = InventorySource.objects.get(pk=r.data['id'])
+        assert list(inv_src.credentials.values_list('id', flat=True)) == [os_cred.pk]
+        patch(
+            url=inv_src.get_absolute_url(),
+            data={
+                'credential': aws_cred.pk
+            },
+            expect=200,
+            user=admin_user
+        )
+        assert list(inv_src.credentials.values_list('id', flat=True)) == [aws_cred.pk]
 
 
 @pytest.mark.django_db
@@ -404,6 +559,17 @@ class TestInsightsCredential:
         patch(insights_inventory.get_absolute_url(),
               {'insights_credential': insights_credential.id}, admin_user,
               expect=200)
+
+    def test_insights_credential_protection(self, post, patch, insights_inventory, alice, insights_credential):
+        insights_inventory.organization.admin_role.members.add(alice)
+        insights_inventory.admin_role.members.add(alice)
+        post(reverse('api:inventory_list'), {
+            "name": "test",
+            "organization": insights_inventory.organization.id,
+            "insights_credential": insights_credential.id
+        }, alice, expect=403)
+        patch(insights_inventory.get_absolute_url(),
+              {'insights_credential': insights_credential.id}, alice, expect=403)
 
     def test_non_insights_credential(self, patch, insights_inventory, admin_user, scm_credential):
         patch(insights_inventory.get_absolute_url(),

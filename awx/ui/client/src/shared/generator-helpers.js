@@ -139,7 +139,7 @@ angular.module('GeneratorHelpers', [systemStatus.name])
                 icon = 'fa-refresh';
                 break;
             case 'scm_update':
-                icon = 'fa-cloud-download';
+                icon = 'fa-refresh';
                 break;
             case 'run':
             case 'rerun':
@@ -193,6 +193,9 @@ angular.module('GeneratorHelpers', [systemStatus.name])
                 break;
             case 'insights':
                 icon = "fa-info";
+                break;
+            case 'network':
+                icon = "fa-sitemap";
                 break;
             case 'cancel':
                 icon = "fa-minus-circle";
@@ -549,6 +552,11 @@ angular.module('GeneratorHelpers', [systemStatus.name])
                 html += "ng-show='!" + list.iterator + "." ;
                 html += (field.flag) ? field.flag : "enabled";
                 html += "' class='ScheduleToggle-switch' ng-click='" + field.ngClick + "'>" + i18n._("OFF") + "</button></div></td>";
+            } else if (field.type === 'invalid') {
+                html += `<td class='List-tableRow--invalid'><div class='List-tableRow--invalidBar' ng-show="${field.ngShow}"`;
+                html += `aw-tool-tip="${field.awToolTip}" data-placement=${field.dataPlacement}>`;
+                html += "<i class='fa fa-exclamation'></i>";
+                html += "</div></td>";
             } else {
                 html += "<td class=\"List-tableCell " + fld + "-column";
                 html += (field['class']) ? " " + field['class'] : "";
@@ -560,7 +568,13 @@ angular.module('GeneratorHelpers', [systemStatus.name])
                 }
                 html += "\" ";
                 html += field.columnNgClass ? " ng-class=\"" + field.columnNgClass + "\"": "";
-                html += (options.mode === 'lookup' || options.mode === 'select') ? " ng-click=\"toggle_row(" + list.iterator + ")\"" : "";
+                if(options.mode === 'lookup' || options.mode === 'select') {
+                    if (options.input_type === "radio") {
+                        html += " ng-click=\"toggle_row(" + list.iterator + ")\"";
+                    } else {
+                        html += " ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ", true)\"";
+                    }
+                }
                 html += (field.columnShow) ? Attr(field, 'columnShow') : "";
                 html += (field.ngBindHtml) ? "ng-bind-html=\"" + field.ngBindHtml + "\" " : "";
                 html += (field.columnClick) ? "ng-click=\"" + field.columnClick + "\" " : "";
@@ -598,7 +612,7 @@ angular.module('GeneratorHelpers', [systemStatus.name])
                     }
 
                     // Start the Link
-                    if ((field.key || field.link || field.linkTo || field.ngClick || field.ngHref || field.awToolTip || field.awPopOver) &&
+                    if ((field.key || field.link || field.linkTo || field.ngClick || field.ngHref || field.uiSref || field.awToolTip || field.awPopOver) &&
                         options.mode !== 'lookup' && options.mode !== 'select' && !field.noLink && !field.ngBindHtml) {
                         if(field.noLink === true){
                             // provide an override here in case we want key=true for sorting purposes but don't want links -- see: portal mode,
@@ -737,6 +751,7 @@ angular.module('GeneratorHelpers', [systemStatus.name])
         html += (options.dataPlacement) ? "data-placement=\"" + options.dataPlacement + "\" " : "";
         html += (options.dataContainer) ? "data-container=\"" + options.dataContainer + "\" " : "";
         html += (options.actionClass) ? "class=\"" + options.actionClass + "\" " : "";
+        html += (options.actionId) ? "id=\"" + options.actionId + "\" " : "";
         html += (options.dataTitle) ? "data-title=\"" + options.dataTitle + "\" " : "";
         html += (options.ngDisabled) ? "ng-disabled=\"" + options.ngDisabled + "\" " : "";
         html += (options.ngClick) ? "ng-click=\"$eval(" + options.ngClick + ")\" " : "";
@@ -751,5 +766,19 @@ angular.module('GeneratorHelpers', [systemStatus.name])
 
         return html;
 
+    };
+})
+
+.factory('MessageBar', function() {
+    return function(options) {
+        let html = '';
+        if (_.has(options, 'messageBar')) {
+            let { messageBar } = options;
+            html += `<div class="Section-messageBar" ng-show="${messageBar.ngShow}">
+                <i class="Section-messageBar-warning fa fa-warning"></i>
+                <span class="Section-messageBar-text">${messageBar.message}</span>
+            </div>`;
+        }
+        return html;
     };
 });

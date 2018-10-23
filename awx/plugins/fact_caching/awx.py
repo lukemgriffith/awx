@@ -41,7 +41,7 @@ from ansible import constants as C
 
 try:
     from ansible.cache.base import BaseCacheModule
-except:
+except Exception:
     from ansible.plugins.cache.base import BaseCacheModule
 
 
@@ -92,6 +92,14 @@ class CacheModule(BaseCacheModule):
         modified_key = self.translate_modified_key(key)
 
         self.mc.set(host_key, json.dumps(value))
+        value = json.dumps(value)
+        rc = self.mc.set(host_key, value)
+        if rc == 0 and len(value) > self.mc.server_max_value_length:
+            self._display.error(
+                "memcache.set('{}', '?') failed, value > server_max_value_length ({} bytes)".format(
+                    key, len(value)
+                )
+            )
         self.mc.set(modified_key, datetime.datetime.now(tzutc()).isoformat())
 
     def keys(self):

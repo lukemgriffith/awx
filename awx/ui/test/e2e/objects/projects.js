@@ -25,6 +25,12 @@ module.exports = {
     url () {
         return `${this.api.globals.launch_url}/#/projects`;
     },
+    commands: [{
+        load () {
+            this.api.url('data:,'); // https://github.com/nightwatchjs/nightwatch/issues/1724
+            return this.navigate();
+        },
+    }],
     sections: {
         header,
         navigation,
@@ -50,11 +56,11 @@ module.exports = {
             }
         },
         list: {
-            selector: '.Panel',
+            selector: '.at-Panel',
             elements: {
-                badge: 'span[class~="badge"]',
-                title: 'div[class="List-titleText"]',
-                add: 'button[class~="List-buttonSubmit"]'
+                badge: '.at-Panel-headingTitleBadge',
+                title: '.at-Panel-headingTitle',
+                add: '#button-add'
             },
             sections: {
                 search,

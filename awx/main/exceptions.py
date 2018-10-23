@@ -1,24 +1,33 @@
-class AwxTaskError(Exception):
-    """Base exception for errors in unified job runs"""
-    def __init__(self, task, message=None):
+# Copyright (c) 2018 Ansible by Red Hat
+# All Rights Reserved.
+
+import six
+
+
+class _AwxTaskError():
+    def build_exception(self, task, message=None):
         if message is None:
-            message = "Execution error running {}".format(task.log_format)
-        super(AwxTaskError, self).__init__(message)
-        self.task = task
- 
- 
-class TaskCancel(AwxTaskError):
-    """Canceled flag caused run_pexpect to kill the job run"""
-    def __init__(self, task, rc):
-        super(TaskCancel, self).__init__(
-            task, message="{} was canceled (rc={})".format(task.log_format, rc))
-        self.rc = rc
+            message = six.text_type("Execution error running {}").format(task.log_format)
+        e = Exception(message)
+        e.task = task
+        e.is_awx_task_error = True
+        return e
+
+    def TaskCancel(self, task, rc):
+        """Canceled flag caused run_pexpect to kill the job run"""
+        message=six.text_type("{} was canceled (rc={})").format(task.log_format, rc)
+        e = self.build_exception(task, message)
+        e.rc = rc
+        e.awx_task_error_type = "TaskCancel"
+        return e
+
+    def TaskError(self, task, rc):
+        """Userspace error (non-zero exit code) in run_pexpect subprocess"""
+        message = six.text_type("{} encountered an error (rc={}), please see task stdout for details.").format(task.log_format, rc)
+        e = self.build_exception(task, message)
+        e.rc = rc
+        e.awx_task_error_type = "TaskError"
+        return e
 
 
-class TaskError(AwxTaskError):
-    """Userspace error (non-zero exit code) in run_pexpect subprocess"""
-    def __init__(self, task, rc):
-        super(TaskError, self).__init__(
-            task, message="%s encountered an error (rc=%s), please see task stdout for details.".format(task.log_format, rc))
-        self.rc = rc
-
+AwxTaskError = _AwxTaskError()

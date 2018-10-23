@@ -60,3 +60,60 @@ def test_proxy_ip_whitelist(get, patch, admin):
         REMOTE_HOST='my.proxy.example.org',
         HTTP_X_FROM_THE_LOAD_BALANCER='some-actual-ip')
     assert middleware.environ['HTTP_X_FROM_THE_LOAD_BALANCER'] == 'some-actual-ip'
+
+
+@pytest.mark.django_db
+class TestDeleteViews:
+    def test_sublist_delete_permission_check(self, inventory_source, host, rando, delete):
+        inventory_source.hosts.add(host)
+        inventory_source.inventory.read_role.members.add(rando)
+        delete(
+            reverse(
+                'api:inventory_source_hosts_list',
+                kwargs={'version': 'v2', 'pk': inventory_source.pk}
+            ), user=rando, expect=403
+        )
+
+    def test_sublist_delete_functionality(self, inventory_source, host, rando, delete):
+        inventory_source.hosts.add(host)
+        inventory_source.inventory.admin_role.members.add(rando)
+        delete(
+            reverse(
+                'api:inventory_source_hosts_list',
+                kwargs={'version': 'v2', 'pk': inventory_source.pk}
+            ), user=rando, expect=204
+        )
+        assert inventory_source.hosts.count() == 0
+
+    def test_destroy_permission_check(self, job_factory, system_auditor, delete):
+        job = job_factory()
+        resp = delete(
+            job.get_absolute_url(), user=system_auditor
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_filterable_fields(options, instance, admin_user):
+    r = options(
+        url=instance.get_absolute_url(),
+        user=admin_user
+    )
+
+    filterable_info = r.data['actions']['GET']['created']
+    non_filterable_info = r.data['actions']['GET']['percent_capacity_remaining']
+
+    assert 'filterable' in filterable_info
+    assert filterable_info['filterable'] is True
+
+    assert not non_filterable_info['filterable']
+
+
+@pytest.mark.django_db
+def test_handle_content_type(post, admin):
+    ''' Tower should return 415 when wrong content type is in HTTP requests '''
+    post(reverse('api:project_list'),
+         {'name': 't', 'organization': None},
+         admin,
+         content_type='text/html',
+         expect=415)

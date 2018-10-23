@@ -11,8 +11,8 @@
 */
 
 
-export default ['NotificationsList', 'CompletedJobsList', 'i18n',
-function(NotificationsList, CompletedJobsList, i18n) {
+export default ['NotificationsList', 'i18n',
+function(NotificationsList, i18n) {
     return function() {
         var JobTemplateFormObject = {
 
@@ -124,12 +124,11 @@ function(NotificationsList, CompletedJobsList, i18n) {
                         <multi-credential
                             credentials="credentials"
                             prompt="ask_credential_on_launch"
-                            selected-credentials="selectedCredentials"
                             credential-not-present="credentialNotPresent"
-                            credentials-to-post="credentialsToPost"
+                            selected-credentials="multiCredential.selectedCredentials"
+                            credential-types="multiCredential.credentialTypes"
                             field-is-disabled="!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)">
                         </multi-credential>`,
-                    required: true,
                     awPopOver: i18n._('Select credentials that allow Tower to access the nodes this job will be ran against. You can only select one credential of each type. For machine credentials (SSH), checking  "Prompt on launch" without selecting credentials will require you to select a machine credential at run time. If you select credentials and check "Prompt on launch", the selected credential(s) become the defaults that can be updated at run time.'),
                     dataTitle: i18n._('Credentials'),
                     dataPlacement: 'right',
@@ -187,15 +186,6 @@ function(NotificationsList, CompletedJobsList, i18n) {
                     },
                     ngDisabled: '!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)',
                 },
-                instance_groups: {
-                    label: i18n._('Instance Groups'),
-                    type: 'custom',
-                    awPopOver: "<p>" + i18n._("Select the Instance Groups for this Job Template to run on.") + "</p>",
-                    dataTitle: i18n._('Instance Groups'),
-                    dataContainer: 'body',
-                    dataPlacement: 'right',
-                    control: '<instance-groups-multiselect instance-groups="instance_groups" field-is-disabled="!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)"></instance-groups-multiselect>',
-                },
                 job_tags: {
                     label: i18n._('Job Tags'),
                     type: 'select',
@@ -239,7 +229,33 @@ function(NotificationsList, CompletedJobsList, i18n) {
                     dataPlacement: 'right',
                     awPopOver: "<p>" + i18n._("Optional labels that describe this job template, such as 'dev' or 'test'. Labels can be used to group and filter job templates and completed jobs.") + "</p>",
                     dataContainer: 'body',
+                    onError: {
+                        ngShow: 'job_template_labels_isValid !== true',
+                        text: i18n._('Max 512 characters per label.'),
+                    },
                     ngDisabled: '!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)'
+                },
+                custom_virtualenv: {
+                    label: i18n._('Ansible Environment'),
+                    type: 'select',
+                    defaultText: i18n._('Use Default Environment'),
+                    ngOptions: 'venv for venv in custom_virtualenvs_options track by venv',
+
+                    awPopOver: "<p>" + i18n._("Select the custom Python virtual environment for this job template to run on.") + "</p>",
+                    dataTitle: i18n._('Ansible Environment'),
+                    dataContainer: 'body',
+                    dataPlacement: 'right',
+                    ngDisabled: '!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)',
+                    ngShow: 'custom_virtualenvs_options.length > 1'
+                },
+                instance_groups: {
+                    label: i18n._('Instance Groups'),
+                    type: 'custom',
+                    awPopOver: "<p>" + i18n._("Select the Instance Groups for this Job Template to run on.") + "</p>",
+                    dataTitle: i18n._('Instance Groups'),
+                    dataContainer: 'body',
+                    dataPlacement: 'right',
+                    control: '<instance-groups-multiselect instance-groups="instance_groups" field-is-disabled="!(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)"></instance-groups-multiselect>',
                 },
                 diff_mode: {
                     label: i18n._('Show Changes'),
@@ -258,7 +274,6 @@ function(NotificationsList, CompletedJobsList, i18n) {
                 checkbox_group: {
                     label: i18n._('Options'),
                     type: 'checkbox_group',
-                    class: 'Form-formGroup--fullWidth',
                     fields: [{
                         name: 'become_enabled',
                         label: i18n._('Enable Privilege Escalation'),
@@ -338,7 +353,7 @@ function(NotificationsList, CompletedJobsList, i18n) {
                         alwaysShowAsterisk: true
                     }
                 },
-                variables: {
+                extra_vars: {
                     label: i18n._('Extra Variables'),
                     type: 'textarea',
                     class: 'Form-textAreaLabel Form-formGroup--fullWidth',
@@ -349,6 +364,7 @@ function(NotificationsList, CompletedJobsList, i18n) {
                     dataTitle: i18n._('Extra Variables'),
                     dataPlacement: 'right',
                     dataContainer: "body",
+                    id: 'extra_vars',
                     subCheckbox: {
                         variable: 'ask_variables_on_launch',
                         text: i18n._('Prompt on launch')
@@ -368,7 +384,7 @@ function(NotificationsList, CompletedJobsList, i18n) {
                 },
                 save: {
                     ngClick: 'formSave()',    //$scope.function to call on click, optional
-                    ngDisabled: "job_template_form.$invalid || credentialNotPresent",//true          //Disable when $pristine or $invalid, optional and when can_edit = false, for permission reasons
+                    ngDisabled: "job_template_form.$invalid",//true          //Disable when $pristine or $invalid, optional and when can_edit = false, for permission reasons
                     ngShow: '(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)'
                 }
             },
@@ -393,8 +409,8 @@ function(NotificationsList, CompletedJobsList, i18n) {
                             ngClick: "$state.go('.add')",
                             label: 'Add',
                             awToolTip: i18n._('Add a permission'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; ' + i18n._('ADD'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(job_template_obj.summary_fields.user_capabilities.edit || canAddJobTemplate)'
                         }
                     },
@@ -424,7 +440,14 @@ function(NotificationsList, CompletedJobsList, i18n) {
                     include: "NotificationsList"
                 },
                 "completed_jobs": {
-                    include: "CompletedJobsList"
+                    title: i18n._('Completed Jobs'),
+                    skipGenerator: true,
+                    ngClick: "$state.go('templates.editJobTemplate.completed_jobs')"
+                },
+                "schedules": {
+                    title: i18n._('Schedules'),
+                    skipGenerator: true,
+                    ngClick: "$state.go('templates.editJobTemplate.schedules')"
                 }
             },
 
@@ -463,11 +486,6 @@ function(NotificationsList, CompletedJobsList, i18n) {
                 JobTemplateFormObject.related[itm] = _.clone(NotificationsList);
                 JobTemplateFormObject.related[itm].ngClick = "$state.go('templates.editJobTemplate.notifications')";
                 JobTemplateFormObject.related[itm].generateList = true;   // tell form generator to call list generator and inject a list
-            }
-            if (JobTemplateFormObject.related[itm].include === "CompletedJobsList") {
-                JobTemplateFormObject.related[itm] = CompletedJobsList;
-                JobTemplateFormObject.related[itm].ngClick = "$state.go('templates.editJobTemplate.completed_jobs')";
-                JobTemplateFormObject.related[itm].generateList = true;
             }
         }
 

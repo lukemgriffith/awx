@@ -18,7 +18,7 @@ const common = createFormSection({
         name: 'Name',
         description: 'Description',
         organization: 'Organization',
-        type: 'Credential type'
+        type: 'Credential Type'
     }
 });
 
@@ -39,6 +39,7 @@ const vault = createFormSection({
     selector: '.at-InputGroup-inset',
     labels: {
         vaultPassword: 'Vault Password',
+        vaultIdentifier: 'Vault Identifier'
     }
 });
 
@@ -67,6 +68,7 @@ const gce = createFormSection({
         email: 'Service Account Email Address',
         project: 'Project',
         sshKeyData: 'RSA Private Key',
+        serviceAccountFile: 'Service Account JSON File'
     }
 });
 
@@ -214,6 +216,12 @@ module.exports = {
     url () {
         return `${this.api.globals.launch_url}/#/credentials`;
     },
+    commands: [{
+        load () {
+            this.api.url('data:,'); // https://github.com/nightwatchjs/nightwatch/issues/1724
+            return this.navigate();
+        },
+    }],
     sections: {
         header,
         navigation,
@@ -225,7 +233,7 @@ module.exports = {
                 details
             },
             elements: {
-                title: 'h3[class="at-Panel-headingTitle"] span'
+                title: 'h3[class*="at-Panel-headingTitle"]'
             }
         },
         edit: {
@@ -235,7 +243,7 @@ module.exports = {
                 permissions
             },
             elements: {
-                title: 'h3[class="at-Panel-headingTitle"] span'
+                title: 'h3[class*="at-Panel-headingTitle"]'
             }
         },
         list: {
@@ -243,7 +251,7 @@ module.exports = {
             elements: {
                 badge: 'span[class~="badge"]',
                 title: 'div[class="List-titleText"]',
-                add: 'button[class~="List-buttonSubmit"]'
+                add: '#button-add'
             },
             sections: {
                 search,

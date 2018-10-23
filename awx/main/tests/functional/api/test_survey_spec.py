@@ -8,6 +8,7 @@ from awx.main.models.jobs import JobTemplate, Job
 from awx.main.models.activity_stream import ActivityStream
 from awx.conf.license import LicenseForbids
 from awx.main.access import JobTemplateAccess
+from awx.main.utils.common import get_type_for_model
 
 
 def mock_no_surveys(self, add_host=False, feature=None, check_expiration=True):
@@ -42,12 +43,15 @@ def test_survey_spec_view_denied(job_template_with_survey, get, admin_user):
     ('execute_role', 403),
     ('read_role', 403)
 ])
-def test_survey_edit_access(job_template, survey_spec_factory, rando, post, role_field, expected_status_code):
+def test_survey_edit_access(job_template, workflow_job_template, survey_spec_factory, rando, post,
+                            role_field, expected_status_code):
     survey_input_data = survey_spec_factory('new_question')
-    role = getattr(job_template, role_field)
-    role.members.add(rando)
-    post(reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
-         user=rando, data=survey_input_data, expect=expected_status_code)
+    for template in (job_template, workflow_job_template):
+        role = getattr(template, role_field)
+        role.members.add(rando)
+        post(reverse('api:{}_survey_spec'.format(get_type_for_model(template.__class__)),
+             kwargs={'pk': template.id}),
+             user=rando, data=survey_input_data, expect=expected_status_code)
 
 
 @mock.patch('awx.main.access.BaseAccess.check_license', mock_no_surveys)
@@ -107,35 +111,237 @@ def test_survey_spec_sucessful_creation(survey_spec_factory, job_template, post,
     assert updated_jt.survey_spec == survey_input_data
 
 
-# Tests related to survey content validation
 @mock.patch('awx.api.views.feature_enabled', lambda feature: True)
 @pytest.mark.django_db
-@pytest.mark.survey
-def test_survey_spec_non_dict_error(deploy_jobtemplate, post, admin_user):
-    """When a question doesn't follow the standard format, verify error thrown."""
-    response = post(
-        url=reverse('api:job_template_survey_spec', kwargs={'pk': deploy_jobtemplate.id}),
-        data={
-            "description": "Email of the submitter",
-            "spec": ["What is your email?"], "name": "Email survey"
-        },
-        user=admin_user,
-        expect=400
-    )
-    assert response.data['error'] == "Survey question 0 is not a json object."
+@pytest.mark.parametrize('with_default', [True, False])
+@pytest.mark.parametrize('value, status', [
+    ('SUPERSECRET', 201),
+    (['some', 'invalid', 'list'], 400),
+    ({'some-invalid': 'dict'}, 400),
+    (False, 400)
+])
+def test_survey_spec_passwords_are_encrypted_on_launch(job_template_factory, post, admin_user, with_default, value, status):
+    objects = job_template_factory('jt', organization='org1', project='prj',
+                                   inventory='inv', credential='cred')
+    job_template = objects.job_template
+    job_template.survey_enabled = True
+    job_template.save()
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': True,
+            'variable': 'secret_value',
+            'type': 'password'
+        }],
+        'name': 'my survey'
+    }
+    if with_default:
+        input_data['spec'][0]['default'] = 'some-default'
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+    resp = post(reverse('api:job_template_launch', kwargs={'pk': job_template.pk}),
+                dict(extra_vars=dict(secret_value=value)), admin_user, expect=status)
+
+    if status == 201:
+        job = Job.objects.get(pk=resp.data['id'])
+        assert json.loads(job.extra_vars)['secret_value'].startswith('$encrypted$')
+        assert json.loads(job.decrypted_extra_vars()) == {
+            'secret_value': value
+        }
+    else:
+        assert "for 'secret_value' expected to be a string." in json.dumps(resp.data)
 
 
 @mock.patch('awx.api.views.feature_enabled', lambda feature: True)
 @pytest.mark.django_db
-@pytest.mark.survey
-def test_survey_spec_dual_names_error(survey_spec_factory, deploy_jobtemplate, post, user):
-    response = post(
-        url=reverse('api:job_template_survey_spec', kwargs={'pk': deploy_jobtemplate.id}),
-        data=survey_spec_factory(['submitter_email', 'submitter_email']),
-        user=user('admin', True),
-        expect=400
-    )
-    assert response.data['error'] == "'variable' 'submitter_email' duplicated in survey question 1."
+def test_survey_spec_passwords_with_empty_default(job_template_factory, post, admin_user):
+    objects = job_template_factory('jt', organization='org1', project='prj',
+                                   inventory='inv', credential='cred')
+    job_template = objects.job_template
+    job_template.survey_enabled = True
+    job_template.save()
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': False,
+            'variable': 'secret_value',
+            'type': 'password',
+            'default': ''
+        }],
+        'name': 'my survey'
+    }
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+
+    resp = post(reverse('api:job_template_launch', kwargs={'pk': job_template.pk}),
+                {}, admin_user, expect=201)
+    job = Job.objects.get(pk=resp.data['id'])
+    assert json.loads(job.extra_vars)['secret_value'] == ''
+    assert json.loads(job.decrypted_extra_vars()) == {
+        'secret_value': ''
+    }
+
+
+@mock.patch('awx.api.views.feature_enabled', lambda feature: True)
+@pytest.mark.django_db
+@pytest.mark.parametrize('default, launch_value, expected_extra_vars, status', [
+    ['', '$encrypted$', {'secret_value': ''}, 201],
+    ['', 'y', {'secret_value': 'y'}, 201],
+    ['', 'y' * 100, None, 400],
+    [None, '$encrypted$', {}, 201],
+    [None, 'y', {'secret_value': 'y'}, 201],
+    [None, 'y' * 100, {}, 400],
+    ['x', '$encrypted$', {'secret_value': 'x'}, 201],
+    ['x', 'y', {'secret_value': 'y'}, 201],
+    ['x', 'y' * 100, {}, 400],
+    ['x' * 100, '$encrypted$', {}, 201],
+    ['x' * 100, 'y', {'secret_value': 'y'}, 201],
+    ['x' * 100, 'y' * 100, {}, 400],
+])
+def test_survey_spec_passwords_with_default_optional(job_template_factory, post, admin_user,
+                                                     default, launch_value,
+                                                     expected_extra_vars, status):
+    objects = job_template_factory('jt', organization='org1', project='prj',
+                                   inventory='inv', credential='cred')
+    job_template = objects.job_template
+    job_template.survey_enabled = True
+    job_template.save()
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': False,
+            'variable': 'secret_value',
+            'type': 'password',
+            'max': 3
+        }],
+        'name': 'my survey'
+    }
+    if default is not None:
+        input_data['spec'][0]['default'] = default
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+
+    resp = post(reverse('api:job_template_launch', kwargs={'pk': job_template.pk}),
+                data={'extra_vars': {'secret_value': launch_value}}, user=admin_user, expect=status)
+
+    if status == 201:
+        job = Job.objects.get(pk=resp.data['job'])
+        assert json.loads(job.decrypted_extra_vars()) == expected_extra_vars
+        if default:
+            assert default not in json.loads(job.extra_vars).values()
+        assert launch_value not in json.loads(job.extra_vars).values()
+
+
+@mock.patch('awx.api.views.feature_enabled', lambda feature: True)
+@pytest.mark.django_db
+@pytest.mark.parametrize('default, launch_value, expected_extra_vars, status', [
+    ['', '$encrypted$', {'secret_value': ''}, 201],
+    [None, '$encrypted$', {}, 400],
+    [None, 'y', {'secret_value': 'y'}, 201],
+])
+def test_survey_spec_passwords_with_default_required(job_template_factory, post, admin_user,
+                                                     default, launch_value,
+                                                     expected_extra_vars, status):
+    objects = job_template_factory('jt', organization='org1', project='prj',
+                                   inventory='inv', credential='cred')
+    job_template = objects.job_template
+    job_template.survey_enabled = True
+    job_template.save()
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': True,
+            'variable': 'secret_value',
+            'type': 'password',
+            'max': 3
+        }],
+        'name': 'my survey'
+    }
+    if default is not None:
+        input_data['spec'][0]['default'] = default
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+
+    resp = post(reverse('api:job_template_launch', kwargs={'pk': job_template.pk}),
+                data={'extra_vars': {'secret_value': launch_value}}, user=admin_user, expect=status)
+
+    if status == 201:
+        job = Job.objects.get(pk=resp.data['job'])
+        assert json.loads(job.decrypted_extra_vars()) == expected_extra_vars
+        if default:
+            assert default not in json.loads(job.extra_vars).values()
+        assert launch_value not in json.loads(job.extra_vars).values()
+
+
+@mock.patch('awx.api.views.feature_enabled', lambda feature: True)
+@pytest.mark.django_db
+@pytest.mark.parametrize('default, status', [
+    ('SUPERSECRET', 200),
+    ({'some-invalid': 'dict'}, 400),
+])
+def test_survey_spec_default_passwords_are_encrypted(job_template, post, admin_user, default, status):
+    job_template.survey_enabled = True
+    job_template.save()
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': True,
+            'variable': 'secret_value',
+            'default': default,
+            'type': 'password'
+        }],
+        'name': 'my survey'
+    }
+    resp = post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+                data=input_data, user=admin_user, expect=status)
+
+    if status == 200:
+        updated_jt = JobTemplate.objects.get(pk=job_template.pk)
+        assert updated_jt.survey_spec['spec'][0]['default'].startswith('$encrypted$')
+
+        job = updated_jt.create_unified_job()
+        assert json.loads(job.extra_vars)['secret_value'].startswith('$encrypted$')
+        assert json.loads(job.decrypted_extra_vars()) == {
+            'secret_value': default
+        }
+    else:
+        assert "expected to be string." in str(resp.data)
+
+
+@mock.patch('awx.api.views.feature_enabled', lambda feature: True)
+@pytest.mark.django_db
+def test_survey_spec_default_passwords_encrypted_on_update(job_template, post, put, admin_user):
+    input_data = {
+        'description': 'A survey',
+        'spec': [{
+            'index': 0,
+            'question_name': 'What is your password?',
+            'required': True,
+            'variable': 'secret_value',
+            'default': 'SUPERSECRET',
+            'type': 'password'
+        }],
+        'name': 'my survey'
+    }
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+    updated_jt = JobTemplate.objects.get(pk=job_template.pk)
+
+    # simulate a survey field edit where we're not changing the default value
+    input_data['spec'][0]['default'] = '$encrypted$'
+    post(url=reverse('api:job_template_survey_spec', kwargs={'pk': job_template.id}),
+         data=input_data, user=admin_user, expect=200)
+    assert updated_jt.survey_spec == JobTemplate.objects.get(pk=job_template.pk).survey_spec
 
 
 # Test actions that should be allowed with non-survey license
@@ -196,7 +402,7 @@ def test_delete_survey_spec_without_license(job_template_with_survey, delete, ad
 
 @mock.patch('awx.main.access.BaseAccess.check_license', lambda self, **kwargs: True)
 @mock.patch('awx.main.models.unified_jobs.UnifiedJobTemplate.create_unified_job',
-            lambda self, extra_vars: mock.MagicMock(spec=Job, id=968))
+            lambda self, **kwargs: mock.MagicMock(spec=Job, id=968))
 @mock.patch('awx.api.serializers.JobSerializer.to_representation', lambda self, obj: {})
 @pytest.mark.django_db
 @pytest.mark.survey

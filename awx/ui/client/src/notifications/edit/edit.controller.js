@@ -59,7 +59,7 @@ export default ['Rest', 'Wait',
             Wait('start');
             Rest.setUrl(url + id + '/');
             Rest.get()
-                .success(function(data) {
+                .then(({data}) => {
                     var fld;
                     for (fld in form.fields) {
                         if (data[fld]) {
@@ -122,7 +122,14 @@ export default ['Rest', 'Wait',
                         multiple: false
                     });
 
-                    $scope.hipchatColors = [i18n._('Gray'), i18n._('Green'), i18n._('Purple'), i18n._('Red'), i18n._('Yellow'), i18n._('Random')];
+                    $scope.hipchatColors = [
+                        {'id': 'gray', 'name': i18n._('Gray')},
+                        {'id': 'green', 'name': i18n._('Green')},
+                        {'id': 'purple', 'name': i18n._('Purple')},
+                        {'id': 'red', 'name': i18n._('Red')},
+                        {'id': 'yellow', 'name': i18n._('Yellow')},
+                        {'id': 'random', 'name': i18n._('Random')}
+                    ];
                     CreateSelect2({
                         element: '#notification_template_color',
                         multiple: false
@@ -144,7 +151,7 @@ export default ['Rest', 'Wait',
                     });
                     Wait('stop');
                 })
-                .error(function(data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, form, {
                         hdr: 'Error!',
                         msg: 'Failed to retrieve notification: ' + id + '. GET status: ' + status
@@ -268,7 +275,7 @@ export default ['Rest', 'Wait',
                 return $scope[i];
             }
 
-            params.notification_configuration = _.object(Object.keys(form.fields)
+            params.notification_configuration = _.fromPairs(Object.keys(form.fields)
                 .filter(i => (form.fields[i].ngShow && form.fields[i].ngShow.indexOf(v) > -1))
                 .map(i => [i, processValue($scope[i], i, form.fields[i])]));
 
@@ -280,11 +287,11 @@ export default ['Rest', 'Wait',
             Wait('start');
             Rest.setUrl(url + id + '/');
             Rest.put(params)
-                .success(function() {
+                .then(() => {
                     $state.go('notifications', {}, { reload: true });
                     Wait('stop');
                 })
-                .error(function(data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, form, {
                         hdr: 'Error!',
                         msg: 'Failed to add new notification template. POST returned status: ' + status

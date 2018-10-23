@@ -22,13 +22,13 @@ export default
                 Wait('start');
                 Rest.setUrl(url);
                 Rest.destroy()
-                    .success(function () {
+                    .then(() => {
                         $('#prompt-modal').modal('hide');
                         scope.$emit(callback, id);
 
                         let reloadListStateParams = null;
 
-                        if(scope.schedules.length === 1 && $state.params.schedule_search && !_.isEmpty($state.params.schedule_search.page) && $state.params.schedule_search.page !== '1') {
+                        if(scope.schedules.length === 1 && $state.params.schedule_search && _.has($state, 'params.schedule_search.page') && $state.params.schedule_search.page !== '1') {
                             reloadListStateParams = _.cloneDeep($state.params);
                             reloadListStateParams.schedule_search.page = (parseInt(reloadListStateParams.schedule_search.page)-1).toString();
                         }
@@ -40,7 +40,7 @@ export default
                             $state.go('.', reloadListStateParams, {reload: true});
                         }
                     })
-                    .error(function (data, status) {
+                    .catch(({data, status}) => {
                         try {
                             $('#prompt-modal').modal('hide');
                         }
@@ -54,7 +54,8 @@ export default
 
             Prompt({
                 hdr: hdr,
-                body: '<div class="Prompt-bodyQuery">Are you sure you want to delete the schedule below?</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(schedule.name) + '</div>',
+                resourceName: $filter('sanitize')(schedule.name),
+                body: '<div class="Prompt-bodyQuery">Are you sure you want to delete this schedule?</div>',
                 action: action,
                 actionText: 'DELETE',
                 backdrop: false

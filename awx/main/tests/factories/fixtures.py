@@ -35,8 +35,9 @@ def mk_instance(persisted=True, hostname='instance.example.org'):
     return Instance.objects.get_or_create(uuid=settings.SYSTEM_UUID, hostname=hostname)[0]
 
 
-def mk_instance_group(name='tower', instance=None):
-    ig, status = InstanceGroup.objects.get_or_create(name=name)
+def mk_instance_group(name='tower', instance=None, minimum=0, percentage=0):
+    ig, status = InstanceGroup.objects.get_or_create(name=name, policy_instance_minimum=minimum,
+                                                     policy_instance_percentage=percentage)
     if instance is not None:
         if type(instance) == list:
             for i in instance:
@@ -141,11 +142,11 @@ def mk_job(job_type='run', status='new', job_template=None, inventory=None,
 
     job.job_template = job_template
     job.inventory = inventory
-    job.credential = credential
-    job.project = project
-
     if persisted:
         job.save()
+        job.credentials.add(credential)
+    job.project = project
+
     return job
 
 
@@ -164,9 +165,11 @@ def mk_job_template(name, job_type='run',
     if jt.inventory is None:
         jt.ask_inventory_on_launch = True
 
-    jt.credential = credential
-    if jt.credential is None:
-        jt.ask_credential_on_launch = True
+    if persisted and credential:
+        jt.save()
+        jt.credentials.add(credential)
+        if jt.credential is None:
+            jt.ask_credential_on_launch = True
 
     jt.project = project
 
@@ -178,10 +181,10 @@ def mk_job_template(name, job_type='run',
         jt.save()
         if cloud_credential:
             cloud_credential.save()
-            jt.extra_credentials.add(cloud_credential)
+            jt.credentials.add(cloud_credential)
         if network_credential:
             network_credential.save()
-            jt.extra_credentials.add(network_credential)
+            jt.credentials.add(network_credential)
         jt.save()
     return jt
 

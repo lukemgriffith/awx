@@ -1,6 +1,8 @@
 # Django REST Framework
 from rest_framework import serializers
 
+import six
+
 # Tower
 from awx.api.fields import VerbatimField
 from awx.api.serializers import BaseSerializer
@@ -16,7 +18,7 @@ class SettingSerializer(BaseSerializer):
     class Meta:
         model = Setting
         fields = ('id', 'key', 'value')
-        readonly_fields = ('id', 'key', 'value')
+        read_only_fields = ('id', 'key', 'value')
 
     def __init__(self, instance=None, data=serializers.empty, **kwargs):
         if instance is None and data is not serializers.empty and 'key' in data:
@@ -45,12 +47,12 @@ class SettingFieldMixin(object):
     """Mixin to use a registered setting field class for API display/validation."""
 
     def to_representation(self, obj):
-        if getattr(self, 'encrypted', False) and isinstance(obj, basestring) and obj:
+        if getattr(self, 'encrypted', False) and isinstance(obj, six.string_types) and obj:
             return '$encrypted$'
         return obj
 
     def to_internal_value(self, value):
-        if getattr(self, 'encrypted', False) and isinstance(value, basestring) and value.startswith('$encrypted$'):
+        if getattr(self, 'encrypted', False) and isinstance(value, six.string_types) and value.startswith('$encrypted$'):
             raise serializers.SkipField()
         obj = super(SettingFieldMixin, self).to_internal_value(value)
         return super(SettingFieldMixin, self).to_representation(obj)
@@ -87,8 +89,10 @@ class SettingSingletonSerializer(serializers.Serializer):
             if self.instance and not hasattr(self.instance, key):
                 continue
             extra_kwargs = {}
-            # Make LICENSE read-only here; update via /api/v1/config/ only.
-            if key == 'LICENSE':
+            # Make LICENSE and AWX_ISOLATED_KEY_GENERATION read-only here;
+            # LICENSE is only updated via /api/v1/config/
+            # AWX_ISOLATED_KEY_GENERATION is only set/unset via the setup playbook
+            if key in ('LICENSE', 'AWX_ISOLATED_KEY_GENERATION'):
                 extra_kwargs['read_only'] = True
             field = settings_registry.get_setting_field(key, mixin_class=SettingFieldMixin, for_user=bool(category_slug == 'user'), **extra_kwargs)
             fields[key] = field

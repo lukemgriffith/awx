@@ -3,10 +3,10 @@ import pytest
 from awx.api.versioning import reverse
 from django.test.client import RequestFactory
 
-from awx.main.models import Role, Group, UnifiedJobTemplate, JobTemplate
-from awx.main.access import access_registry
-from awx.main.utils import cache_list_capabilities
-from awx.api.serializers import JobTemplateSerializer
+from awx.main.models import Role, Group, UnifiedJobTemplate, JobTemplate, WorkflowJobTemplate
+from awx.main.access import access_registry, WorkflowJobTemplateAccess
+from awx.main.utils import prefetch_page_capabilities
+from awx.api.serializers import JobTemplateSerializer, UnifiedJobTemplateSerializer
 
 # This file covers special-cases of displays of user_capabilities
 # general functionality should be covered fully by unit tests, see:
@@ -89,46 +89,25 @@ class TestJobTemplateCopyEdit:
             job_type='run',
             project=project,
             inventory=None,  ask_inventory_on_launch=False, # not allowed
-            credential=None, ask_credential_on_launch=True,
-            name='deploy-job-template'
+            ask_credential_on_launch=True, name='deploy-job-template'
         )
-        serializer = JobTemplateSerializer(jt_res)
-        serializer.context = self.fake_context(admin_user)
+        serializer = JobTemplateSerializer(jt_res, context=self.fake_context(admin_user))
         response = serializer.to_representation(jt_res)
         assert not response['summary_fields']['user_capabilities']['copy']
         assert response['summary_fields']['user_capabilities']['edit']
 
     def test_sys_admin_copy_edit(self, jt_copy_edit, admin_user):
         "Absent a validation error, system admins can do everything"
-        serializer = JobTemplateSerializer(jt_copy_edit)
-        serializer.context = self.fake_context(admin_user)
+        serializer = JobTemplateSerializer(jt_copy_edit, context=self.fake_context(admin_user))
         response = serializer.to_representation(jt_copy_edit)
         assert response['summary_fields']['user_capabilities']['copy']
         assert response['summary_fields']['user_capabilities']['edit']
 
     def test_org_admin_copy_edit(self, jt_copy_edit, org_admin):
         "Organization admins SHOULD be able to copy a JT firmly in their org"
-        serializer = JobTemplateSerializer(jt_copy_edit)
-        serializer.context = self.fake_context(org_admin)
+        serializer = JobTemplateSerializer(jt_copy_edit, context=self.fake_context(org_admin))
         response = serializer.to_representation(jt_copy_edit)
         assert response['summary_fields']['user_capabilities']['copy']
-        assert response['summary_fields']['user_capabilities']['edit']
-
-    def test_org_admin_foreign_cred_no_copy_edit(self, jt_copy_edit, org_admin, machine_credential):
-        """
-        Organization admins without access to the 3 related resources:
-        SHOULD NOT be able to copy JT
-        SHOULD be able to edit that job template, for nonsensitive changes
-        """
-
-        # Attach credential to JT that org admin cannot use
-        jt_copy_edit.credential = machine_credential
-        jt_copy_edit.save()
-
-        serializer = JobTemplateSerializer(jt_copy_edit)
-        serializer.context = self.fake_context(org_admin)
-        response = serializer.to_representation(jt_copy_edit)
-        assert not response['summary_fields']['user_capabilities']['copy']
         assert response['summary_fields']['user_capabilities']['edit']
 
     def test_jt_admin_copy_edit(self, jt_copy_edit, rando):
@@ -140,8 +119,7 @@ class TestJobTemplateCopyEdit:
         jt_copy_edit.admin_role.members.add(rando)
         jt_copy_edit.save()
 
-        serializer = JobTemplateSerializer(jt_copy_edit)
-        serializer.context = self.fake_context(rando)
+        serializer = JobTemplateSerializer(jt_copy_edit, context=self.fake_context(rando))
         response = serializer.to_representation(jt_copy_edit)
         assert not response['summary_fields']['user_capabilities']['copy']
         assert response['summary_fields']['user_capabilities']['edit']
@@ -155,8 +133,7 @@ class TestJobTemplateCopyEdit:
         jt_copy_edit.project.admin_role.members.add(rando)
         jt_copy_edit.project.save()
 
-        serializer = JobTemplateSerializer(jt_copy_edit)
-        serializer.context = self.fake_context(rando)
+        serializer = JobTemplateSerializer(jt_copy_edit, context=self.fake_context(rando))
         response = serializer.to_representation(jt_copy_edit)
         assert response['summary_fields']['user_capabilities']['copy']
         assert response['summary_fields']['user_capabilities']['edit']
@@ -219,12 +196,6 @@ class TestAccessListCapabilities:
         direct_access_list = response.data['results'][0]['summary_fields']['direct_access']
         assert direct_access_list[0]['role']['user_capabilities']['unattach'] == 'foobar'
 
-    def test_user_access_list_direct_access_capability(self, rando, get):
-        "When a user views their own access list, they cannot unattach their admin role"
-        response = get(reverse('api:user_access_list', kwargs={'pk': rando.id}), rando)
-        direct_access_list = response.data['results'][0]['summary_fields']['direct_access']
-        assert not direct_access_list[0]['role']['user_capabilities']['unattach']
-
 
 @pytest.mark.django_db
 def test_team_roles_unattach(mocker, team, team_member, inventory, mock_access_method, get):
@@ -276,61 +247,84 @@ def test_user_roles_unattach_functional(organization, alice, bob, get):
 def test_prefetch_jt_capabilities(job_template, rando):
     job_template.execute_role.members.add(rando)
     qs = JobTemplate.objects.all()
-    cache_list_capabilities(qs, ['admin', 'execute'], JobTemplate, rando)
-    assert qs[0].capabilities_cache == {'edit': False, 'start': True}
+    mapping = prefetch_page_capabilities(JobTemplate, qs, ['admin', 'execute'], rando)
+    assert mapping[job_template.id] == {'edit': False, 'start': True}
 
 
 @pytest.mark.django_db
 def test_prefetch_ujt_job_template_capabilities(alice, bob, job_template):
     job_template.execute_role.members.add(alice)
     qs = UnifiedJobTemplate.objects.all()
-    cache_list_capabilities(qs, ['admin', 'execute'], UnifiedJobTemplate, alice)
-    assert qs[0].capabilities_cache == {'edit': False, 'start': True}
+    mapping = prefetch_page_capabilities(UnifiedJobTemplate, qs, ['admin', 'execute'], alice)
+    assert mapping[job_template.id] == {'edit': False, 'start': True}
     qs = UnifiedJobTemplate.objects.all()
-    cache_list_capabilities(qs, ['admin', 'execute'], UnifiedJobTemplate, bob)
-    assert qs[0].capabilities_cache == {'edit': False, 'start': False}
+    mapping = prefetch_page_capabilities(UnifiedJobTemplate, qs, ['admin', 'execute'], bob)
+    assert mapping[job_template.id] == {'edit': False, 'start': False}
 
 
 @pytest.mark.django_db
-def test_prefetch_ujt_project_capabilities(alice, project):
+def test_prefetch_ujt_project_capabilities(alice, project, job_template, mocker):
     project.update_role.members.add(alice)
     qs = UnifiedJobTemplate.objects.all()
-    cache_list_capabilities(qs, ['admin', 'execute'], UnifiedJobTemplate, alice)
-    assert qs[0].capabilities_cache == {}
+
+    class MockObj:
+        pass
+
+    view = MockObj()
+    view.request = MockObj()
+    view.request.user = alice
+    view.request.method = 'GET'
+    view.kwargs = {}
+
+    list_serializer = UnifiedJobTemplateSerializer(qs, many=True, context={'view': view})
+
+    # Project form of UJT serializer does not fill in or reference the prefetch dict
+    list_serializer.child.to_representation(project)
+    assert 'capability_map' not in list_serializer.child.context
+
+    # Models for which the prefetch is valid for do
+    list_serializer.child.to_representation(job_template)
+    assert set(list_serializer.child.context['capability_map'][job_template.id].keys()) == set(('copy', 'edit', 'start'))
 
 
 @pytest.mark.django_db
 def test_prefetch_group_capabilities(group, rando):
     group.inventory.adhoc_role.members.add(rando)
     qs = Group.objects.all()
-    cache_list_capabilities(qs, ['inventory.admin', 'inventory.adhoc'], Group, rando)
-    assert qs[0].capabilities_cache == {'edit': False, 'adhoc': True}
+    mapping = prefetch_page_capabilities(Group, qs, ['inventory.admin', 'inventory.adhoc'], rando)
+    assert mapping[group.id] == {'edit': False, 'adhoc': True}
 
 
 @pytest.mark.django_db
-def test_prefetch_jt_copy_capability(job_template, project, inventory,
-                                     machine_credential, vault_credential, rando):
+def test_prefetch_jt_copy_capability(job_template, project, inventory, rando):
     job_template.project = project
     job_template.inventory = inventory
-    job_template.credential = machine_credential
-    job_template.vault_credential = vault_credential
     job_template.save()
 
     qs = JobTemplate.objects.all()
-    cache_list_capabilities(qs, [{'copy': [
-        'project.use', 'inventory.use', 'credential.use', 'vault_credential.use'
-    ]}], JobTemplate, rando)
-    assert qs[0].capabilities_cache == {'copy': False}
+    mapping = prefetch_page_capabilities(JobTemplate, qs, [{'copy': [
+        'project.use', 'inventory.use',
+    ]}], rando)
+    assert mapping[job_template.id] == {'copy': False}
 
     project.use_role.members.add(rando)
     inventory.use_role.members.add(rando)
-    machine_credential.use_role.members.add(rando)
-    vault_credential.use_role.members.add(rando)
 
-    cache_list_capabilities(qs, [{'copy': [
-        'project.use', 'inventory.use', 'credential.use', 'vault_credential.use'
-    ]}], JobTemplate, rando)
-    assert qs[0].capabilities_cache == {'copy': True}
+    mapping = prefetch_page_capabilities(JobTemplate, qs, [{'copy': [
+        'project.use', 'inventory.use',
+    ]}], rando)
+    assert mapping[job_template.id] == {'copy': True}
+
+
+@pytest.mark.django_db
+def test_workflow_orphaned_capabilities(rando):
+    wfjt = WorkflowJobTemplate.objects.create(name='test', organization=None)
+    wfjt.admin_role.members.add(rando)
+    access = WorkflowJobTemplateAccess(rando)
+    assert not access.get_user_capabilities(
+        wfjt, method_list=['edit', 'copy'],
+        capabilities_cache={'copy': True}
+    )['copy']
 
 
 @pytest.mark.django_db

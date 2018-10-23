@@ -1,10 +1,10 @@
 import defaults from '~assets/default.strings.json';
 
 let i18n;
+let $filter;
 
 function BaseStringService (namespace) {
     const ERROR_NO_NAMESPACE = 'BaseString cannot be extended without providing a namespace';
-    const ERROR_NO_STRING = 'No string exists with this name';
 
     if (!namespace) {
         throw new Error(ERROR_NO_NAMESPACE);
@@ -59,16 +59,54 @@ function BaseStringService (namespace) {
      * the project.
      */
     this.CANCEL = t.s('CANCEL');
+    this.CLOSE = t.s('CLOSE');
     this.SAVE = t.s('SAVE');
     this.OK = t.s('OK');
+    this.NEXT = t.s('NEXT');
+    this.SHOW = t.s('SHOW');
+    this.HIDE = t.s('HIDE');
+    this.ON = t.s('ON');
+    this.OFF = t.s('OFF');
+    this.YAML = t.s('YAML');
+    this.JSON = t.s('JSON');
+    this.DELETE = t.s('DELETE');
+    this.COPY = t.s('COPY');
+    this.YES = t.s('YES');
+    this.CLOSE = t.s('CLOSE');
+    this.SUCCESSFUL_CREATION = resource => t.s('{{ resource }} successfully created', { resource: $filter('sanitize')(resource) });
+
+    this.deleteResource = {
+        HEADER: t.s('Delete'),
+        USED_BY: resourceType => t.s('The {{ resourceType }} is currently being used by other resources.', { resourceType }),
+        UNAVAILABLE: resourceType => t.s('Deleting this {{ resourceType }} will make the following resources unavailable.', { resourceType }),
+        CONFIRM: resourceType => t.s('Are you sure you want to delete this {{ resourceType }}?', { resourceType })
+    };
+
+    this.cancelJob = {
+        HEADER: t.s('Cancel'),
+        SUBMIT_REQUEST: t.s('Are you sure you want to submit the request to cancel this job?'),
+        CANCEL_JOB: t.s('Cancel Job'),
+        RETURN: t.s('Return')
+    };
+
+    this.error = {
+        HEADER: t.s('Error!'),
+        CALL: ({ path, action, status }) => t.s('Call to {{ path }} failed. {{ action }} returned status: {{ status }}.', { path, action, status }),
+    };
+
+    this.listActions = {
+        COPY: resourceType => t.s('Copy {{resourceType}}', { resourceType }),
+        DELETE: resourceType => t.s('Delete the {{resourceType}}', { resourceType }),
+        CANCEL: resourceType => t.s('Cancel the {{resourceType}}', { resourceType })
+    };
+
+    this.ALERT = ({ header, body }) => t.s('{{ header }} {{ body }}', { header, body });
 
     /**
      * This getter searches the extending class' namespace first for a match then falls back to
      * the more globally relevant strings defined here. Strings with with dots as delimeters are
      * supported to give flexibility to extending classes to nest strings as necessary.
      *
-     * If no match is found, an error is thrown to alert the developer immediately instead of
-     * failing silently.
      *
      * The `t.s` and `t.p` calls should only be used where strings are defined in
      * <name>.strings.js` files. To use translated strings elsewhere, access them through this
@@ -88,22 +126,23 @@ function BaseStringService (namespace) {
             } else {
                 value = value[key];
             }
-
-            if (!value) {
-                throw new Error(`${ERROR_NO_STRING}: ${name}`);
-            }
         });
 
-        return typeof value === 'string' ? value : value(...args);
+        if (!value || typeof value === 'string') {
+            return value;
+        }
+
+        return value(...args);
     };
 }
 
-function BaseStringServiceLoader (_i18n_) {
+function BaseStringServiceLoader (_i18n_, _$filter_) {
     i18n = _i18n_;
+    $filter = _$filter_;
 
     return BaseStringService;
 }
 
-BaseStringServiceLoader.$inject = ['i18n'];
+BaseStringServiceLoader.$inject = ['i18n', '$filter'];
 
 export default BaseStringServiceLoader;

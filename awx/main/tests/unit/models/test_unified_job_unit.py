@@ -3,10 +3,22 @@ import mock
 
 from awx.main.models import (
     UnifiedJob,
+    UnifiedJobTemplate,
     WorkflowJob,
     WorkflowJobNode,
-    Job
+    Job,
+    User,
+    Project,
+    JobTemplate
 )
+
+
+def test_incorrectly_formatted_variables():
+    bad_data = '{"bar":"foo'
+    accepted, ignored, errors = UnifiedJobTemplate().accept_or_ignore_variables(bad_data)
+    assert not accepted
+    assert ignored == bad_data
+    assert 'Cannot parse as JSON' in str(errors['extra_vars'][0])
 
 
 def test_unified_job_workflow_attributes():
@@ -40,7 +52,7 @@ def test_cancel(unified_job):
     # Some more thought may want to go into only emitting canceled if/when the job record
     # status is changed to canceled. Unlike, currently, where it's emitted unconditionally.
     unified_job.websocket_emit_status.assert_called_with("canceled")
-    unified_job.save.assert_called_with(update_fields=['cancel_flag', 'status'])
+    unified_job.save.assert_called_with(update_fields=['cancel_flag', 'start_args', 'status'])
 
 
 def test_cancel_job_explanation(unified_job):
@@ -49,7 +61,7 @@ def test_cancel_job_explanation(unified_job):
     unified_job.cancel(job_explanation=job_explanation)
 
     assert unified_job.job_explanation == job_explanation
-    unified_job.save.assert_called_with(update_fields=['cancel_flag', 'status', 'job_explanation'])
+    unified_job.save.assert_called_with(update_fields=['cancel_flag', 'start_args', 'status', 'job_explanation'])
 
 
 def test_log_representation():
@@ -61,3 +73,51 @@ def test_log_representation():
     assert job.log_format == 'job 4 (running)'
     assert uj.log_format == 'unified_job 4 (running)'
 
+
+class TestMetaVars:
+    '''
+    Corresponding functional test exists for cases with indirect relationships
+    '''
+
+    def test_job_metavars(self):
+        maker = User(username='joe', pk=47, id=47)
+        assert Job(
+            name='fake-job',
+            pk=42, id=42,
+            launch_type='manual',
+            created_by=maker
+        ).awx_meta_vars() == {
+            'tower_job_id': 42,
+            'awx_job_id': 42,
+            'tower_job_launch_type': 'manual',
+            'awx_job_launch_type': 'manual',
+            'awx_user_name': 'joe',
+            'tower_user_name': 'joe',
+            'awx_user_email': '',
+            'tower_user_email': '',
+            'awx_user_first_name': '',
+            'tower_user_first_name': '',
+            'awx_user_last_name': '',
+            'tower_user_last_name': '',
+            'awx_user_id': 47,
+            'tower_user_id': 47
+        }
+
+    def test_project_update_metavars(self):
+        data = Job(
+            name='fake-job',
+            pk=40, id=40,
+            launch_type='manual',
+            project=Project(
+                name='jobs-sync',
+                scm_revision='12345444'
+            ),
+            job_template=JobTemplate(
+                name='jobs-jt',
+                id=92, pk=92
+            )
+        ).awx_meta_vars()
+        assert data['awx_project_revision'] == '12345444'
+        assert 'tower_job_template_id' in data
+        assert data['tower_job_template_id'] == 92
+        assert data['tower_job_template_name'] == 'jobs-jt'

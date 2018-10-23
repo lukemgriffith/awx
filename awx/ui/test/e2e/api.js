@@ -3,20 +3,22 @@ import https from 'https';
 import axios from 'axios';
 
 import {
-    awxURL,
-    awxUsername,
-    awxPassword
+    AWX_E2E_URL,
+    AWX_E2E_USERNAME,
+    AWX_E2E_PASSWORD
 } from './settings';
 
-let authenticated;
-
 const session = axios.create({
-    baseURL: awxURL,
+    baseURL: AWX_E2E_URL,
     xsrfHeaderName: 'X-CSRFToken',
     xsrfCookieName: 'csrftoken',
     httpsAgent: new https.Agent({
         rejectUnauthorized: false
-    })
+    }),
+    auth: {
+        username: AWX_E2E_USERNAME,
+        password: AWX_E2E_PASSWORD
+    }
 });
 
 const getEndpoint = location => {
@@ -24,39 +26,18 @@ const getEndpoint = location => {
         return location;
     }
 
-    return `${awxURL}/api/v2${location}`;
-};
-
-const authenticate = () => {
-    if (authenticated) {
-        return Promise.resolve();
-    }
-
-    const uri = getEndpoint('/authtoken/');
-
-    const credentials = {
-        username: awxUsername,
-        password: awxPassword
-    };
-
-    return session.post(uri, credentials).then(res => {
-        session.defaults.headers.Authorization = `Token ${res.data.token}`;
-        authenticated = true;
-
-        return res;
-    });
+    return `${AWX_E2E_URL}/api/v2${location}`;
 };
 
 const request = (method, location, data) => {
     const uri = getEndpoint(location);
     const action = session[method.toLowerCase()];
 
-    return authenticate()
-        .then(() => action(uri, data))
+    return action(uri, data)
         .then(res => {
             console.log([ // eslint-disable-line no-console
                 res.config.method.toUpperCase(),
-                uri,
+                res.config.url,
                 res.status,
                 res.statusText
             ].join(' '));
@@ -77,6 +58,4 @@ module.exports = {
     post,
     patch,
     put,
-    all: axios.all,
-    spread: axios.spread
 };

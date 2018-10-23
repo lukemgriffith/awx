@@ -6,11 +6,11 @@
 
 export default ['$scope', '$rootScope',
     '$stateParams', 'Rest', 'ProcessErrors',
-    'GetBasePath', 'InitiatePlaybookRun', 'Wait', 'TemplateCopyService',
+    'GetBasePath', 'Wait',
     '$state', 'OrgJobTemplateList', 'OrgJobTemplateDataset', 'QuerySet',
     function($scope, $rootScope,
         $stateParams, Rest, ProcessErrors,
-        GetBasePath, InitiatePlaybookRun, Wait, TemplateCopyService,
+        GetBasePath, Wait,
         $state, OrgJobTemplateList, Dataset, qs) {
 
         var list = OrgJobTemplateList,
@@ -34,7 +34,7 @@ export default ['$scope', '$rootScope',
             $scope[list.name] = $scope[`${list.iterator}_dataset`].results;
             Rest.setUrl(orgBase + $stateParams.organization_id);
             Rest.get()
-                .success(function(data) {
+                .then(({data}) => {
                     $scope.organization_name = data.name;
                     $scope.name = data.name;
                     $scope.org_id = data.id;
@@ -72,33 +72,5 @@ export default ['$scope', '$rootScope',
         $scope.editJobTemplate = function(id) {
             $state.go('templates.editJobTemplate', { job_template_id: id });
         };
-
-        $scope.submitJob = function(id) {
-            InitiatePlaybookRun({ scope: $scope, id: id, job_type: 'job_template' });
-        };
-
-        $scope.scheduleJob = function(id) {
-            $state.go('jobTemplateSchedules', { id: id });
-        };
-
-        $scope.copyTemplate = function(id) {
-            Wait('start');
- 			TemplateCopyService.get(id)
- 			.success(function(res){
- 					TemplateCopyService.set(res)
-                    .success(function(res){
-                        Wait('stop');
-                        if(res.type && res.type === 'job_template') {
-                            $state.go('templates.editJobTemplate', {job_template_id: res.id}, {reload: true});
-                        }
-                    });
- 			})
-  			.error(function(res, status){
-                ProcessErrors($rootScope, res, status, null, {hdr: 'Error!',
-                msg: 'Call failed. Return status: '+ status});
-            });
-
-        };
-
     }
 ];

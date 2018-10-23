@@ -6,6 +6,7 @@ import logging
 import uuid
 
 import ldap
+import six
 
 # Django
 from django.dispatch import receiver
@@ -17,6 +18,7 @@ from django.core.signals import setting_changed
 from django_auth_ldap.backend import LDAPSettings as BaseLDAPSettings
 from django_auth_ldap.backend import LDAPBackend as BaseLDAPBackend
 from django_auth_ldap.backend import populate_user
+from django.core.exceptions import ImproperlyConfigured
 
 # radiusauth
 from radiusauth.backends import RADIUSBackend as BaseRADIUSBackend
@@ -25,9 +27,9 @@ from radiusauth.backends import RADIUSBackend as BaseRADIUSBackend
 import tacacs_plus
 
 # social
-from social.backends.saml import OID_USERID
-from social.backends.saml import SAMLAuth as BaseSAMLAuth
-from social.backends.saml import SAMLIdentityProvider as BaseSAMLIdentityProvider
+from social_core.backends.saml import OID_USERID
+from social_core.backends.saml import SAMLAuth as BaseSAMLAuth
+from social_core.backends.saml import SAMLIdentityProvider as BaseSAMLIdentityProvider
 
 # Ansible Tower
 from awx.conf.license import feature_enabled
@@ -41,6 +43,7 @@ class LDAPSettings(BaseLDAPSettings):
     defaults = dict(BaseLDAPSettings.defaults.items() + {
         'ORGANIZATION_MAP': {},
         'TEAM_MAP': {},
+        'GROUP_TYPE_PARAMS': {},
     }.items())
 
     def __init__(self, prefix='AUTH_LDAP_', defaults={}):
@@ -104,7 +107,16 @@ class LDAPBackend(BaseLDAPBackend):
                 return None
         except User.DoesNotExist:
             pass
+
         try:
+            for setting_name, type_ in [
+                ('GROUP_SEARCH', 'LDAPSearch'),
+                ('GROUP_TYPE', 'LDAPGroupType'),
+            ]:
+                if getattr(self.settings, setting_name) is None:
+                    raise ImproperlyConfigured(
+                        "{} must be an {} instance.".format(setting_name, type_)
+                    )
             return super(LDAPBackend, self).authenticate(username, password)
         except Exception:
             logger.exception("Encountered an error authenticating to LDAP")
@@ -131,6 +143,26 @@ class LDAPBackend(BaseLDAPBackend):
 
     def get_group_permissions(self, user, obj=None):
         return set()
+
+
+class LDAPBackend1(LDAPBackend):
+    settings_prefix = 'AUTH_LDAP_1_'
+
+
+class LDAPBackend2(LDAPBackend):
+    settings_prefix = 'AUTH_LDAP_2_'
+
+
+class LDAPBackend3(LDAPBackend):
+    settings_prefix = 'AUTH_LDAP_3_'
+
+
+class LDAPBackend4(LDAPBackend):
+    settings_prefix = 'AUTH_LDAP_4_'
+
+
+class LDAPBackend5(LDAPBackend):
+    settings_prefix = 'AUTH_LDAP_5_'
 
 
 def _decorate_enterprise_user(user, provider):
@@ -160,7 +192,7 @@ class RADIUSBackend(BaseRADIUSBackend):
     Custom Radius backend to verify license status
     '''
 
-    def authenticate(self, username, password):
+    def authenticate(self, username, password):    
         if not django_settings.RADIUS_SERVER:
             return None
         if not feature_enabled('enterprise_auth'):
@@ -229,7 +261,7 @@ class TowerSAMLIdentityProvider(BaseSAMLIdentityProvider):
 
     def get_user_permanent_id(self, attributes):
         uid = attributes[self.conf.get('attr_user_permanent_id', OID_USERID)]
-        if isinstance(uid, basestring):
+        if isinstance(uid, six.string_types):
             return uid
         return uid[0]
 
@@ -241,13 +273,14 @@ class TowerSAMLIdentityProvider(BaseSAMLIdentityProvider):
         """
         key = self.conf.get(conf_key, default_attribute)
         value = attributes[key] if key in attributes else None
-        if isinstance(value, list):
+        # In certain implementations (like https://pagure.io/ipsilon) this value is a string, not a list
+        if isinstance(value, (list, tuple)):
             value = value[0]
         if conf_key in ('attr_first_name', 'attr_last_name', 'attr_username', 'attr_email') and value is None:
             logger.warn("Could not map user detail '%s' from SAML attribute '%s'; "
                         "update SOCIAL_AUTH_SAML_ENABLED_IDPS['%s']['%s'] with the correct SAML attribute.",
                         conf_key[5:], key, self.name, conf_key)
-        return unicode(value) if value is not None else value
+        return six.text_type(value) if value is not None else value
 
 
 class SAMLAuth(BaseSAMLAuth):
@@ -300,16 +333,16 @@ def _update_m2m_from_groups(user, ldap_user, rel, opts, remove=True):
     elif opts is True:
         should_add = True
     else:
-        if isinstance(opts, basestring):
+        if isinstance(opts, six.string_types):
             opts = [opts]
         for group_dn in opts:
-            if not isinstance(group_dn, basestring):
+            if not isinstance(group_dn, six.string_types):
                 continue
             if ldap_user._get_groups().is_member_of(group_dn):
                 should_add = True
     if should_add:
         rel.add(user)
-    elif remove:
+    elif remove and user in rel.all():
         rel.remove(user)
 
 

@@ -50,8 +50,8 @@ export default ['i18n', function(i18n) {
                 mode: 'all', // One of: edit, select, all
                 ngClick: 'addCredential()',
                 awToolTip: i18n._('Create a new credential'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: "true"
             }
         },
@@ -69,7 +69,14 @@ export default ['i18n', function(i18n) {
                 dataPlacement: 'top',
                 ngShow: 'credential.summary_fields.user_capabilities.edit'
             },
-
+            copy: {
+                label: i18n._('Copy'),
+                ngClick: 'copyCredential(credential)',
+                "class": 'btn-danger btn-xs',
+                awToolTip: i18n._('Copy credential'),
+                dataPlacement: 'top',
+                ngShow: 'credential.summary_fields.user_capabilities.copy'
+            },
             view: {
                 ngClick: "editCredential(credential.id)",
                 label: i18n._('View'),

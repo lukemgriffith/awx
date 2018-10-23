@@ -1,19 +1,36 @@
-let BaseModel;
+let Base;
+let Credential;
 
-function OrganizationModel (method, resource, graft) {
-    BaseModel.call(this, 'organizations');
-
-    this.Constructor = OrganizationModel;
-
-    return this.create(method, resource, graft);
+function setDependentResources (id) {
+    this.dependentResources = [
+        {
+            model: new Credential(),
+            params: {
+                organization: id
+            }
+        }
+    ];
 }
 
-function OrganizationModelLoader (_BaseModel_) {
-    BaseModel = _BaseModel_;
+function OrganizationModel (method, resource, config) {
+    Base.call(this, 'organizations');
+
+    this.Constructor = OrganizationModel;
+    this.setDependentResources = setDependentResources.bind(this);
+
+    return this.create(method, resource, config);
+}
+
+function OrganizationModelLoader (BaseModel, CredentialModel) {
+    Base = BaseModel;
+    Credential = CredentialModel;
 
     return OrganizationModel;
 }
 
-OrganizationModelLoader.$inject = ['BaseModel'];
+OrganizationModelLoader.$inject = [
+    'BaseModel',
+    'CredentialModel'
+];
 
 export default OrganizationModelLoader;

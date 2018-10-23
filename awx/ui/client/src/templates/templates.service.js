@@ -259,9 +259,9 @@ export default ['Rest', 'GetBasePath', '$q', 'NextPage', function(Rest, GetBaseP
 
           Rest.setUrl(url);
           Rest.options()
-              .success(function(data) {
+              .then(({data}) => {
                   deferred.resolve(data);
-              }).error(function(msg, code) {
+              }).catch(({msg, code}) => {
                   deferred.reject(msg, code);
               });
 
@@ -274,13 +274,22 @@ export default ['Rest', 'GetBasePath', '$q', 'NextPage', function(Rest, GetBaseP
 
           Rest.setUrl(url);
           Rest.options()
-              .success(function(data) {
+              .then(({data}) => {
                   deferred.resolve(data);
-              }).error(function(msg, code) {
+              }).catch(({msg, code}) => {
                   deferred.reject(msg, code);
               });
 
           return deferred.promise;
+      },
+      postWorkflowNodeCredential: function(params) {
+          // params.id
+          // params.data
+
+          var url = GetBasePath('workflow_job_template_nodes') + params.id + '/credentials';
+
+          Rest.setUrl(url);
+          return Rest.post(params.data);
       }
     };
 }];

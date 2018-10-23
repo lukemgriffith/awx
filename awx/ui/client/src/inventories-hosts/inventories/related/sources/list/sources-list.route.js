@@ -17,7 +17,8 @@ export default {
     data: {
         socket: {
             groups: {
-                jobs: ["status_changed"]
+                jobs: ["status_changed"],
+                inventories: ["status_changed"]
             }
         }
     },
@@ -40,7 +41,7 @@ export default {
     },
     resolve: {
         inventorySourceOptions: ['SourcesService', (SourcesService) => {
-            return SourcesService.options().then(res => res.data.actions.GET);
+            return SourcesService.options().then(response => response.data.actions.GET);
         }],
         Dataset: ['SourcesListDefinition', 'QuerySet', '$stateParams', 'GetBasePath', '$interpolate', '$rootScope',
             (list, qs, $stateParams, GetBasePath, $interpolate, $rootScope) => {

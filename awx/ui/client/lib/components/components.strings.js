@@ -16,6 +16,10 @@ function ComponentsStrings (BaseString) {
         INVALID_INPUT: t.s('Invalid input for this type.')
     };
 
+    ns.file = {
+        PLACEHOLDER: t.s('CHOOSE A FILE')
+    };
+
     ns.form = {
         SUBMISSION_ERROR_TITLE: t.s('Unable to Submit'),
         SUBMISSION_ERROR_MESSAGE: t.s('Unexpected server error. View the console for more information'),
@@ -48,6 +52,15 @@ function ComponentsStrings (BaseString) {
         COPIED: t.s('Copied to clipboard.')
     };
 
+    ns.toggle = {
+        VIEW_MORE: t.s('VIEW MORE'),
+        VIEW_LESS: t.s('VIEW LESS')
+    };
+
+    ns.tooltips = {
+        VIEW_THE_CREDENTIAL: t.s('View the Credential'),
+    };
+
     ns.layout = {
         CURRENT_USER_LABEL: t.s('Logged in as'),
         VIEW_DOCS: t.s('View Documentation'),
@@ -55,7 +68,7 @@ function ComponentsStrings (BaseString) {
         DASHBOARD: t.s('Dashboard'),
         JOBS: t.s('Jobs'),
         SCHEDULES: t.s('Schedules'),
-        PORTAL_MODE: t.s('Portal Mode'),
+        MY_VIEW: t.s('My View'),
         PROJECTS: t.s('Projects'),
         CREDENTIALS: t.s('Credentials'),
         CREDENTIAL_TYPES: t.s('Credential Types'),
@@ -67,14 +80,32 @@ function ComponentsStrings (BaseString) {
         INVENTORY_SCRIPTS: t.s('Inventory Scripts'),
         NOTIFICATIONS: t.s('Notifications'),
         MANAGEMENT_JOBS: t.s('Management Jobs'),
+        INSTANCES: t.s('Instances'),
         INSTANCE_GROUPS: t.s('Instance Groups'),
+        APPLICATIONS: t.s('Applications'),
         SETTINGS: t.s('Settings'),
-        FOOTER_ABOUT: t.s('About'),
-        FOOTER_COPYRIGHT: t.s('Copyright © 2017 Red Hat, Inc.')
+        ABOUT: t.s('About'),
+        COPYRIGHT: t.s('Copyright © 2018 Red Hat, Inc.'),
+        VIEWS_HEADER: t.s('Views'),
+        RESOURCES_HEADER: t.s('Resources'),
+        ACCESS_HEADER: t.s('Access'),
+        ADMINISTRATION_HEADER: t.s('Administration')
     };
 
-    ns.capacityBar = {
-        IS_OFFLINE: t.s('Unavailable to run jobs.')
+    ns.relaunch = {
+        DEFAULT: t.s('Relaunch using the same parameters'),
+        HOSTS: t.s('Relaunch using host parameters'),
+        DROPDOWN_TITLE: t.s('Relaunch On'),
+        ALL: t.s('All'),
+        FAILED: t.s('Failed')
+    };
+
+    ns.launchTemplate = {
+        DEFAULT: t.s('Start a job using this template')
+    };
+
+    ns.list = {
+        DEFAULT_EMPTY_LIST: t.s('Please add items to this list.')
     };
 }
 

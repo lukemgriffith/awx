@@ -7,7 +7,9 @@ from collections import OrderedDict
 import json
 import mock
 import os
+import shutil
 import sys
+import tempfile
 
 import pytest
 
@@ -26,14 +28,15 @@ CALLBACK = os.path.splitext(os.path.basename(__file__))[0]
 PLUGINS = os.path.dirname(__file__)
 with mock.patch.dict(os.environ, {'ANSIBLE_STDOUT_CALLBACK': CALLBACK,
                                   'ANSIBLE_CALLBACK_PLUGINS': PLUGINS}):
+    from ansible import __version__ as ANSIBLE_VERSION
     from ansible.cli.playbook import PlaybookCLI
     from ansible.executor.playbook_executor import PlaybookExecutor
-    from ansible.inventory import Inventory
+    from ansible.inventory.manager import InventoryManager
     from ansible.parsing.dataloader import DataLoader
-    from ansible.vars import VariableManager
+    from ansible.vars.manager import VariableManager
 
     # Add awx/lib to sys.path so we can use the plugin
-    path = os.path.abspath(os.path.join(PLUGINS, '..', '..'))
+    path = os.path.abspath(os.path.join(PLUGINS, '..', '..', 'lib'))
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -67,9 +70,8 @@ def executor(tmpdir_factory, request):
     cli.parse()
     options = cli.parser.parse_args(['-v'])[0]
     loader = DataLoader()
-    variable_manager = VariableManager()
-    inventory = Inventory(loader=loader, variable_manager=variable_manager,
-                          host_list=['localhost'])
+    variable_manager = VariableManager(loader=loader)
+    inventory = InventoryManager(loader=loader, sources='localhost,')
     variable_manager.set_inventory(inventory)
 
     return PlaybookExecutor(playbooks=playbook_files, inventory=inventory,
@@ -175,6 +177,19 @@ def test_callback_plugin_receives_events(executor, cache, event, playbook):
         when: item != "SENSITIVE-SKIPPED"
         failed_when: item == "SENSITIVE-FAILED"
         ignore_errors: yes
+'''},  # noqa, NOTE: with_items will be deprecated in 2.9
+{'loop.yml': '''
+- name: loop tasks should be suppressed with no_log
+  connection: local
+  hosts: all
+  gather_facts: no
+  tasks:
+      - shell: echo {{ item }}
+        no_log: true
+        loop: [ "SENSITIVE", "SENSITIVE-SKIPPED", "SENSITIVE-FAILED" ]
+        when: item != "SENSITIVE-SKIPPED"
+        failed_when: item == "SENSITIVE-FAILED"
+        ignore_errors: yes
 '''},  # noqa
 ])
 def test_callback_plugin_no_log_filters(executor, cache, playbook):
@@ -185,14 +200,16 @@ def test_callback_plugin_no_log_filters(executor, cache, playbook):
 
 @pytest.mark.parametrize('playbook', [
 {'no_log_on_ok.yml': '''
-- name: args should not be logged when task-level no_log is set
+- name: args should not be logged when no_log is set at the task or module level
   connection: local
   hosts: all
   gather_facts: no
   tasks:
-    - shell: echo "SENSITIVE"
+    - shell: echo "PUBLIC"
     - shell: echo "PRIVATE"
       no_log: true
+    - uri: url=https://example.org username="PUBLIC" password="PRIVATE"
+    - copy: content="PRIVATE" dest="/tmp/tmp_no_log"
 '''},  # noqa
 ])
 def test_callback_plugin_task_args_leak(executor, cache, playbook):
@@ -203,15 +220,15 @@ def test_callback_plugin_task_args_leak(executor, cache, playbook):
 
     # task 1
     assert events[2]['event'] == 'playbook_on_task_start'
-    assert 'SENSITIVE' in events[2]['event_data']['task_args']
     assert events[3]['event'] == 'runner_on_ok'
-    assert 'SENSITIVE' in events[3]['event_data']['task_args']
 
     # task 2 no_log=True
     assert events[4]['event'] == 'playbook_on_task_start'
-    assert events[4]['event_data']['task_args'] == "the output has been hidden due to the fact that 'no_log: true' was specified for this result"  # noqa
     assert events[5]['event'] == 'runner_on_ok'
-    assert events[5]['event_data']['task_args'] == "the output has been hidden due to the fact that 'no_log: true' was specified for this result"  # noqa
+    assert 'PUBLIC' in json.dumps(cache.items())
+    assert 'PRIVATE' not in json.dumps(cache.items())
+    # make sure playbook was successful, so all tasks were hit
+    assert not events[-1]['event_data']['failures'], 'Unexpected playbook execution failure'
 
 
 @pytest.mark.parametrize('playbook', [
@@ -260,3 +277,77 @@ def test_callback_plugin_strips_task_environ_variables(executor, cache, playbook
     assert len(cache)
     for event in cache.values():
         assert os.environ['PATH'] not in json.dumps(event)
+
+
+@pytest.mark.parametrize('playbook', [
+{'custom_set_stat.yml': '''
+- name: custom set_stat calls should persist to the local disk so awx can save them
+  connection: local
+  hosts: all
+  tasks:
+    - set_stats:
+        data:
+          foo: "bar"
+'''},  # noqa
+])
+def test_callback_plugin_saves_custom_stats(executor, cache, playbook):
+    try:
+        private_data_dir = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {'AWX_PRIVATE_DATA_DIR': private_data_dir}):
+            executor.run()
+            artifacts_path = os.path.join(private_data_dir, 'artifacts', 'custom')
+            with open(artifacts_path, 'r') as f:
+                assert json.load(f) == {'foo': 'bar'}
+    finally:
+        shutil.rmtree(os.path.join(private_data_dir))
+
+
+@pytest.mark.parametrize('playbook', [
+{'handle_playbook_on_notify.yml': '''
+- name: handle playbook_on_notify events properly
+  connection: local
+  hosts: all
+  handlers:
+    - name: my_handler
+      debug: msg="My Handler"
+  tasks:
+    - debug: msg="My Task"
+      changed_when: true
+      notify:
+        - my_handler
+'''},  # noqa
+])
+@pytest.mark.skipif(ANSIBLE_VERSION < '2.5', reason="v2_playbook_on_notify doesn't work before ansible 2.5")
+def test_callback_plugin_records_notify_events(executor, cache, playbook):
+    executor.run()
+    assert len(cache)
+    notify_events = [x[1] for x in cache.items() if x[1]['event'] == 'playbook_on_notify']
+    assert len(notify_events) == 1
+    assert notify_events[0]['event_data']['handler'] == 'my_handler'
+    assert notify_events[0]['event_data']['host'] == 'localhost'
+    assert notify_events[0]['event_data']['task'] == 'debug'
+
+
+@pytest.mark.parametrize('playbook', [
+{'no_log_module_with_var.yml': '''
+- name: ensure that module-level secrets are redacted
+  connection: local
+  hosts: all
+  vars:
+    - pw: SENSITIVE
+  tasks:
+    - uri:
+        url: https://example.org
+        user: john-jacob-jingleheimer-schmidt
+        password: "{{ pw }}"
+'''},  # noqa
+])
+def test_module_level_no_log(executor, cache, playbook):
+    # https://github.com/ansible/tower/issues/1101
+    # It's possible for `no_log=True` to be defined at the _module_ level,
+    # e.g., for the URI module password parameter
+    # This test ensures that we properly redact those
+    executor.run()
+    assert len(cache)
+    assert 'john-jacob-jingleheimer-schmidt' in json.dumps(cache.items())
+    assert 'SENSITIVE' not in json.dumps(cache.items())

@@ -4,7 +4,6 @@
  * All Rights Reserved
  *************************************************/
 
-
 export default ['i18n', function(i18n) {
     return {
 
@@ -17,8 +16,17 @@ export default ['i18n', function(i18n) {
         hover: true,
 
         fields: {
+            invalid: {
+                columnClass: "List-staticColumn--invalidBar",
+                label: '',
+                type: 'invalid',
+                nosort: true,
+                awToolTip: i18n._("Resources are missing from this template."),
+                dataPlacement: 'right',
+                ngShow: '!isValid(schedule)'
+            },
             toggleSchedule: {
-                ngDisabled: "!schedule.summary_fields.user_capabilities.edit",
+                ngDisabled: "!schedule.summary_fields.user_capabilities.edit || credentialRequiresPassword",
                 label: '',
                 columnClass: 'List-staticColumn--toggle',
                 type: "toggle",
@@ -31,7 +39,7 @@ export default ['i18n', function(i18n) {
             name: {
                 key: true,
                 label: i18n._('Name'),
-                ngClick: "editSchedule(schedule)",
+                uiSref: "{{schedule.linkToDetails}}",
                 columnClass: "col-md-3 col-sm-3 col-xs-6"
             },
             dtstart: {
@@ -62,11 +70,13 @@ export default ['i18n', function(i18n) {
             },
             add: {
                 mode: 'all',
-                ngClick: 'addSchedule()',
+                ngClick: 'credentialRequiresPassword || addSchedule()',
                 awToolTip: i18n._('Add a new schedule'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
-                ngShow: 'canAdd'
+                dataTipWatch: 'addTooltip',
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
+                ngShow: 'canAdd',
+                ngClass: "{ 'Form-tab--disabled': credentialRequiresPassword }"
             }
         },
 
@@ -77,14 +87,14 @@ export default ['i18n', function(i18n) {
                 icon: 'icon-edit',
                 awToolTip: i18n._('Edit schedule'),
                 dataPlacement: 'top',
-                ngShow: 'schedule.summary_fields.user_capabilities.edit'
+                ngShow: 'schedule.summary_fields.user_capabilities.edit && !credentialRequiresPassword'
             },
             view: {
                 label: i18n._('View'),
                 ngClick: "editSchedule(schedule)",
                 awToolTip: i18n._('View schedule'),
                 dataPlacement: 'top',
-                ngShow: '!schedule.summary_fields.user_capabilities.edit'
+                ngShow: '!schedule.summary_fields.user_capabilities.edit || credentialRequiresPassword'
             },
             "delete": {
                 label: i18n._('Delete'),

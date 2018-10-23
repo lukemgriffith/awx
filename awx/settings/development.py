@@ -4,10 +4,12 @@
 # Development settings for AWX project.
 
 # Python
+import os
 import socket
 import copy
 import sys
 import traceback
+import uuid
 
 # Centos-7 doesn't include the svg mime type
 # /usr/lib64/python/mimetypes.py
@@ -18,6 +20,27 @@ from split_settings.tools import optional, include
 
 # Load default settings.
 from defaults import *  # NOQA
+
+# don't use memcache when running tests
+if "pytest" in sys.modules:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'unique-{}'.format(str(uuid.uuid4())),
+        },
+    }
+
+# awx-manage shell_plus --notebook
+NOTEBOOK_ARGUMENTS = [
+    '--NotebookApp.token=',
+    '--ip', '0.0.0.0',
+    '--port', '8888',
+    '--allow-root',
+    '--no-browser',
+]
+
+# print SQL queries in shell_plus
+SHELL_PLUS_PRINT_SQL = False
 
 # show colored logs in the dev environment
 # to disable this, set `COLOR_LOGS = False` in awx/settings/local_settings.py
@@ -39,19 +62,18 @@ SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 
 # Override django.template.loaders.cached.Loader in defaults.py
-TEMPLATE_LOADERS = (
+template = next((tpl_backend for tpl_backend in TEMPLATES if tpl_backend['NAME'] == 'default'), None) # noqa
+template['OPTIONS']['loaders'] = (
     'django.template.loaders.filesystem.Loader',
     'django.template.loaders.app_directories.Loader',
 )
 
-# Disable capturing all SQL queries when running celeryd in development.
-if 'celeryd' in sys.argv:
-    SQL_DEBUG = False
-
-CELERYD_HIJACK_ROOT_LOGGER = False
-CELERYD_LOG_COLOR = True
-
 CALLBACK_QUEUE = "callback_tasks"
+
+# Enable dynamically pulling roles from a requirement.yml file
+# when updating SCM projects
+# Note: This setting may be overridden by database settings.
+AWX_ROLES_ENABLED = True
 
 # Enable PROOT for tower-qa integration tests.
 # Note: This setting may be overridden by database settings.
@@ -87,12 +109,7 @@ if 'django_jenkins' in INSTALLED_APPS:
     PEP8_RCFILE = "setup.cfg"
     PYLINT_RCFILE = ".pylintrc"
 
-# Much faster than the default
-# https://docs.djangoproject.com/en/1.6/topics/auth/passwords/#how-django-stores-passwords
-PASSWORD_HASHERS = (
-    'django.contrib.auth.hashers.MD5PasswordHasher',
-    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
-)
+INSTALLED_APPS += ('rest_framework_swagger',)
 
 # Configure a default UUID for development only.
 SYSTEM_UUID = '00000000-0000-0000-0000-000000000000'
@@ -110,8 +127,9 @@ for setting in dir(this_module):
 include(optional('/etc/tower/settings.py'), scope=locals())
 include(optional('/etc/tower/conf.d/*.py'), scope=locals())
 
-ANSIBLE_VENV_PATH = "/venv/ansible"
-AWX_VENV_PATH = "/venv/awx"
+BASE_VENV_PATH = "/venv/"
+ANSIBLE_VENV_PATH = os.path.join(BASE_VENV_PATH, "ansible")
+AWX_VENV_PATH = os.path.join(BASE_VENV_PATH, "awx")
 
 # If any local_*.py files are present in awx/settings/, use them to override
 # default settings for development.  If not present, we can still run using
@@ -123,24 +141,11 @@ except ImportError:
     sys.exit(1)
 
 CLUSTER_HOST_ID = socket.gethostname()
-CELERY_ROUTES['awx.main.tasks.cluster_node_heartbeat'] = {'queue': CLUSTER_HOST_ID, 'routing_key': CLUSTER_HOST_ID}
-# Production only runs this schedule on controlling nodes
-# but development will just run it on all nodes
-CELERY_ROUTES['awx.main.tasks.awx_isolated_heartbeat'] = {'queue': CLUSTER_HOST_ID, 'routing_key': CLUSTER_HOST_ID}
-CELERYBEAT_SCHEDULE['isolated_heartbeat'] = {
-    'task': 'awx.main.tasks.awx_isolated_heartbeat',
-    'schedule': timedelta(seconds = AWX_ISOLATED_PERIODIC_CHECK),
-    'options': {'expires': AWX_ISOLATED_PERIODIC_CHECK * 2,}
-}
 
-# Supervisor service name dictionary used for programatic restart
-SERVICE_NAME_DICT = {
-    "celery": "celeryd",
-    "callback": "receiver",
-    "runworker": "channels",
-    "uwsgi": "uwsgi",
-    "daphne": "daphne",
-    "nginx": "nginx"}
-# Used for sending commands in automatic restart
-UWSGI_FIFO_LOCATION = '/awxfifo'
+try:
+    socket.gethostbyname('docker.for.mac.host.internal')
+    os.environ['SDB_NOTIFY_HOST'] = 'docker.for.mac.host.internal'
+except Exception:
+    os.environ['SDB_NOTIFY_HOST'] = os.popen('ip route').read().split(' ')[2]
 
+WEBSOCKET_ORIGIN_WHITELIST = ['https://localhost:8043', 'https://localhost:3000']

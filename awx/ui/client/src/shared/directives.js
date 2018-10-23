@@ -38,7 +38,7 @@ angular.module('AWDirectives', ['RestServices', 'Utilities'])
     };
 })
 
-// caplitalize  Add to any input field where the first letter of each
+// capitalize  Add to any input field where the first letter of each
 //              word should be capitalized. Use in place of css test-transform.
 //              For some reason "text-transform: capitalize" in breadcrumbs
 //              causes a break at each blank space. And of course,
@@ -65,13 +65,29 @@ angular.module('AWDirectives', ['RestServices', 'Utilities'])
     };
 })
 
+// stringToNumber
+//
+// If your model does not contain actual numbers then this directive
+// will do the conversion in the ngModel $formatters and $parsers pipeline.
+//
+.directive('stringToNumber', function() {
+    return {
+        require: 'ngModel',
+        restrict: 'A',
+        link: function(scope, element, attrs, ngModel) {
+            ngModel.$parsers.push(value => value.toFixed(2));
+            ngModel.$formatters.push(value => parseFloat(value));
+        }
+    };
+})
+
 // imageUpload
 //
 // Accepts image and returns base64 information with basic validation
 // Can eventually expand to handle all uploads with different endpoints and handlers
 //
-.directive('imageUpload', ['ConfigurationUtils', 'i18n', '$rootScope',
-function(ConfigurationUtils, i18n, $rootScope) {
+.directive('imageUpload', ['SettingsUtils', 'i18n', '$rootScope',
+function(SettingsUtils, i18n, $rootScope) {
     var browseText = i18n._('BROWSE'),
     placeholderText = i18n._('Choose file'),
     uploadedText = i18n._('Current Image: '),
@@ -141,7 +157,7 @@ function(ConfigurationUtils, i18n, $rootScope) {
             scope.fileChange = function(file) {
                 filePickerError.html('');
 
-                ConfigurationUtils.imageProcess(file[0])
+                SettingsUtils.imageProcess(file[0])
                     .then(function(result) {
                         scope.$parent[fieldKey] = result;
                         filePickerText.val(file[0].name);
@@ -481,7 +497,7 @@ function(ConfigurationUtils, i18n, $rootScope) {
 }])
 
 // lookup   Validate lookup value against API
-.directive('awlookup', ['Rest', 'GetBasePath', '$q', function(Rest, GetBasePath, $q) {
+.directive('awlookup', ['Rest', 'GetBasePath', '$q', '$state', function(Rest, GetBasePath, $q, $state) {
     return {
         require: 'ngModel',
         link: function(scope, elm, attrs, fieldCtrl) {
@@ -556,7 +572,7 @@ function(ConfigurationUtils, i18n, $rootScope) {
 
                 Rest.setUrl(`${basePath}` + query);
                 Rest.get()
-                .success(function (data) {
+                .then(({data}) => {
                     if (data.count === 1) {
                         scope[modelKey] = data.results[0].name;
                         scope[modelName] = data.results[0].id;
@@ -648,7 +664,17 @@ function(ConfigurationUtils, i18n, $rootScope) {
                                 query += '&cloud=true&role_level=use_role';
                                 break;
                             case 'organization':
-                                query += '&role_level=admin_role';
+                                if ($state.current.name.includes('inventories')) {
+                                    query += '&role_level=inventory_admin_role';
+                                } else if ($state.current.name.includes('templates.editWorkflowJobTemplate')) {
+                                    query += '&role_level=workflow_admin_role';
+                                } else if ($state.current.name.includes('projects')) {
+                                    query += '&role_level=project_admin_role';
+                                } else if ($state.current.name.includes('notifications')) {
+                                    query += '&role_level=notification_admin_role';
+                                } else {
+                                    query += '&role_level=admin_role';
+                                }
                                 break;
                             case 'inventory_script':
                                 query += '&role_level=admin_role&organization=' + scope.$resolve.inventoryData.summary_fields.organization.id;
@@ -1223,31 +1249,29 @@ function(ConfigurationUtils, i18n, $rootScope) {
     };
 }])
 
-.directive('awRequireMultiple', [function() {
+.directive('awRequireMultiple', ['Empty', function(Empty) {
     return {
         require: 'ngModel',
         link: function postLink(scope, element, attrs, ngModel) {
             // Watch for changes to the required attribute
-            attrs.$observe('required', function(value) {
-                if(value) {
-                    ngModel.$validators.required = function (value) {
-                        if(angular.isArray(value)) {
-                            if(value.length === 0) {
-                                return false;
-                            }
-                            else {
-                                return (!value[0] || value[0] === "") ? false : true;
-                            }
-                        }
-                        else {
-                            return (!value || value === "") ? false : true;
-                        }
-                    };
-                }
-                else {
-                    delete ngModel.$validators.required;
-                }
+            attrs.$observe('required', function() {
+                ngModel.$validate();
             });
+
+            ngModel.$validators.multipleSelect = function (modelValue) {
+                if(attrs.required) {
+                    if(angular.isArray(modelValue)) {
+                        // Checks to make sure at least one value in the array
+                        return _.some(modelValue, function(arrayVal) {
+                            return !Empty(arrayVal);
+                        });
+                    } else {
+                        return !Empty(modelValue);
+                    }
+                } else {
+                    return true;
+                }
+            };
         }
     };
 }]);

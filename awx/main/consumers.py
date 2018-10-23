@@ -1,19 +1,15 @@
 import json
 import logging
-import urllib
 
-from channels import Group, channel_layers
-from channels.sessions import channel_session
-from channels.handler import AsgiRequest
+from channels import Group
+from channels.auth import channel_session_user_from_http, channel_session_user
 
-from django.conf import settings
+from django.http.cookie import parse_cookie
 from django.core.serializers.json import DjangoJSONEncoder
-
-from django.contrib.auth.models import User
-from awx.main.models.organization import AuthToken
 
 
 logger = logging.getLogger('awx.main.consumers')
+XRF_KEY = '_auth_user_xrf'
 
 
 def discard_groups(message):
@@ -22,52 +18,53 @@ def discard_groups(message):
             Group(group).discard(message.reply_channel)
 
 
-@channel_session
+@channel_session_user_from_http
 def ws_connect(message):
-    connect_text = {'accept':False, 'user':None}
-
+    headers = dict(message.content.get('headers', ''))
+    message.reply_channel.send({"accept": True})
     message.content['method'] = 'FAKE'
-    request = AsgiRequest(message)
-    token = request.COOKIES.get('token', None)
-    if token is not None:
-        token = urllib.unquote(token).strip('"')
-        try:
-            auth_token = AuthToken.objects.get(key=token)
-            if auth_token.in_valid_tokens:
-                message.channel_session['user_id'] = auth_token.user_id
-                connect_text['accept'] = True
-                connect_text['user'] = auth_token.user_id
-        except AuthToken.DoesNotExist:
-            logger.error("auth_token provided was invalid.")
-    message.reply_channel.send({"text": json.dumps(connect_text)})
+    if message.user.is_authenticated():
+        message.reply_channel.send(
+            {"text": json.dumps({"accept": True, "user": message.user.id})}
+        )
+        # store the valid CSRF token from the cookie so we can compare it later
+        # on ws_receive
+        cookie_token = parse_cookie(
+            headers.get('cookie')
+        ).get('csrftoken')
+        if cookie_token:
+            message.channel_session[XRF_KEY] = cookie_token
+    else:
+        logger.error("Request user is not authenticated to use websocket.")
+        message.reply_channel.send({"close": True})
+    return None
 
 
-@channel_session
+@channel_session_user
 def ws_disconnect(message):
     discard_groups(message)
 
 
-@channel_session
+@channel_session_user
 def ws_receive(message):
     from awx.main.access import consumer_access
-    channel_layer_settings = channel_layers.configs[message.channel_layer.alias]
-    max_retries = channel_layer_settings.get('RECEIVE_MAX_RETRY', settings.CHANNEL_LAYER_RECEIVE_MAX_RETRY)
-
-    user_id = message.channel_session.get('user_id', None)
-    if user_id is None:
-        retries = message.content.get('connect_retries', 0) + 1
-        message.content['connect_retries'] = retries
-        message.reply_channel.send({"text": json.dumps({"error": "no valid user"})})
-        retries_left = max_retries - retries
-        if retries_left > 0:
-            message.channel_layer.send(message.channel.name, message.content)
-        else:
-            logger.error("No valid user found for websocket.")
-        return None
-
-    user = User.objects.get(pk=user_id)
+    user = message.user
     raw_data = message.content['text']
     data = json.loads(raw_data)
+
+    xrftoken = data.get('xrftoken')
+    if (
+        not xrftoken or
+        XRF_KEY not in message.channel_session or
+        xrftoken != message.channel_session[XRF_KEY]
+    ):
+        logger.error(
+            "access denied to channel, XRF mismatch for {}".format(user.username)
+        )
+        message.reply_channel.send({
+            "text": json.dumps({"error": "access denied to channel"})
+        })
+        return
 
     if 'groups' in data:
         discard_groups(message)

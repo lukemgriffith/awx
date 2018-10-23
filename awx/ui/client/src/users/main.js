@@ -9,7 +9,11 @@ import UsersAdd from './add/users-add.controller';
 import UsersEdit from './edit/users-edit.controller';
 import UserForm from './users.form';
 import UserList from './users.list';
-import { N_ } from '../i18n';
+
+import userListRoute from './users.route';
+import UserTokensListRoute from '../../features/users/tokens/users-tokens-list.route';
+import UserTokensAddRoute from '../../features/users/tokens/users-tokens-add.route';
+import UserTokensAddApplicationRoute from '../../features/users/tokens/users-tokens-add-application.route';
 
 export default
 angular.module('Users', [])
@@ -18,33 +22,93 @@ angular.module('Users', [])
     .controller('UsersEdit', UsersEdit)
     .factory('UserForm', UserForm)
     .factory('UserList', UserList)
-    .config(['$stateProvider', 'stateDefinitionsProvider',
-        function($stateProvider, stateDefinitionsProvider) {
+    .config(['$stateProvider', 'stateDefinitionsProvider', '$stateExtenderProvider',
+        function($stateProvider, stateDefinitionsProvider, $stateExtenderProvider) {
             let stateDefinitions = stateDefinitionsProvider.$get();
+            let stateExtender = $stateExtenderProvider.$get();
 
-            // lazily generate a tree of substates which will replace this node in ui-router's stateRegistry
-            // see: stateDefinition.factory for usage documentation
-            $stateProvider.state({
-                name: 'users.**',
-                url: '/users',
-                lazyLoad: () => stateDefinitions.generateTree({
-                    parent: 'users',
-                    modes: ['add', 'edit'],
-                    list: 'UserList',
+            function generateStateTree() {
+                let userAdd = stateDefinitions.generateTree({
+                    name: 'users.add',
+                    url: '/add',
+                    modes: ['add'],
                     form: 'UserForm',
                     controllers: {
-                        list: UsersList,
-                        add: UsersAdd,
-                        edit: UsersEdit
+                        add: 'UsersAdd'
+                    },
+                    resolve: {
+                        add: {
+                            canAdd: ['rbacUiControlService', '$state', function(rbacUiControlService, $state) {
+                                return rbacUiControlService.canAdd('users')
+                                    .then(function(res) {
+                                        return res.canAdd;
+                                    })
+                                    .catch(function() {
+                                        $state.go('users');
+                                    });
+                            }],
+                            resolvedModels: ['MeModel', '$q',  function(Me, $q) {
+                                const promises= {
+                                    me: new Me('get').then((me) => me.extend('get', 'admin_of_organizations'))
+                                };
+    
+                                return $q.all(promises);
+                            }]
+                        }
+                    }
+                });
+
+                let userEdit = stateDefinitions.generateTree({
+                    name: 'users.edit',
+                    url: '/:user_id',
+                    modes: ['edit'],
+                    form: 'UserForm',
+                    parent: 'users',
+                    controllers: {
+                        edit: 'UsersEdit'
                     },
                     data: {
                         activityStream: true,
                         activityStreamTarget: 'user'
                     },
-                    ncyBreadcrumb: {
-                        label: N_('USERS')
-                    }
-                })
+                    breadcrumbs: { 
+                        edit: "{{breadcrumb.user_name}}"
+                    },
+                    resolve: {
+                        edit: {
+                            resolvedModels: ['MeModel', '$q',  function(Me, $q) {
+                                const promises= {
+                                    me: new Me('get').then((me) => me.extend('get', 'admin_of_organizations'))
+                                };
+
+                                return $q.all(promises);
+                            }]
+                        }
+                    },
+                });
+                
+                return Promise.all([
+                    userAdd, 
+                    userEdit
+                ]).then((generated) => {
+                    return {
+                        states: _.reduce(generated, (result, definition) => {
+                            return result.concat(definition.states);
+                        }, [
+                            stateExtender.buildDefinition(userListRoute),
+                            stateExtender.buildDefinition(UserTokensListRoute),
+                            stateExtender.buildDefinition(UserTokensAddRoute),
+                            stateExtender.buildDefinition(UserTokensAddApplicationRoute)
+                        ])
+                    };
+                });
+            }
+
+            $stateProvider.state({
+                name: 'users.**',
+                url: '/users',
+                lazyLoad: () => generateStateTree()
             });
+
         }
     ]);

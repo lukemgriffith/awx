@@ -16,17 +16,20 @@ export default
         'Rest', 'Alert',  'ProcessErrors', 'GetBasePath', 'md5Setup',
         'ParseTypeChange', 'Wait', 'selectedLabels', 'i18n',
         'Empty', 'Prompt', 'ToJSON', 'GetChoices', 'CallbackHelpInit',
-        'InitiatePlaybookRun' , 'initSurvey', '$state', 'CreateSelect2',
-        'ToggleNotification','$q', 'InstanceGroupsService', 'InstanceGroupsData', 'MultiCredentialService', 'availableLabels',
-        'projectGetPermissionDenied', 'inventoryGetPermissionDenied', 'jobTemplateData', 'ParseVariableString',
+        'initSurvey', '$state', 'CreateSelect2',
+        'ToggleNotification','$q', 'InstanceGroupsService', 'InstanceGroupsData',
+        'MultiCredentialService', 'availableLabels', 'projectGetPermissionDenied',
+        'inventoryGetPermissionDenied', 'jobTemplateData', 'ParseVariableString', 'ConfigData',
         function(
             $filter, $scope, $rootScope,
             $location, $stateParams, JobTemplateForm, GenerateForm, Rest, Alert,
             ProcessErrors, GetBasePath, md5Setup,
             ParseTypeChange, Wait, selectedLabels, i18n,
-            Empty, Prompt, ToJSON, GetChoices, CallbackHelpInit, InitiatePlaybookRun, SurveyControllerInit, $state,
-            CreateSelect2, ToggleNotification, $q, InstanceGroupsService, InstanceGroupsData, MultiCredentialService, availableLabels,
-            projectGetPermissionDenied, inventoryGetPermissionDenied, jobTemplateData, ParseVariableString
+            Empty, Prompt, ToJSON, GetChoices, CallbackHelpInit,
+            SurveyControllerInit, $state, CreateSelect2,
+            ToggleNotification, $q, InstanceGroupsService, InstanceGroupsData,
+            MultiCredentialService, availableLabels, projectGetPermissionDenied,
+            inventoryGetPermissionDenied, jobTemplateData, ParseVariableString, ConfigData
         ) {
 
             $scope.$watch('job_template_obj.summary_fields.user_capabilities.edit', function(val) {
@@ -38,7 +41,6 @@ export default
             let defaultUrl = GetBasePath('job_templates'),
                 generator = GenerateForm,
                 form = JobTemplateForm(),
-                base = $location.path().replace(/^\//, '').split('/')[0],
                 master = {},
                 id = $stateParams.job_template_id,
                 callback,
@@ -60,6 +62,8 @@ export default
                 $scope.surveyTooltip = i18n._('Surveys allow users to be prompted at job launch with a series of questions related to the job. This allows for variables to be defined that affect the playbook run at time of launch.');
                 $scope.job_tag_options = [];
                 $scope.skip_tag_options = [];
+                const virtualEnvs = ConfigData.custom_virtualenvs || [];
+                $scope.custom_virtualenvs_options = virtualEnvs;
 
                 SurveyControllerInit({
                     scope: $scope,
@@ -81,7 +85,7 @@ export default
                             Wait('start');
                             Rest.setUrl(url);
                             promises.push(Rest.get()
-                                .success(function (data) {
+                                .then(({data}) => {
                                     $scope.disablePlaybookBecausePermissionDenied = false;
                                     $scope.playbook_options = [];
                                     var playbookNotFound = true;
@@ -98,8 +102,8 @@ export default
                                         jobTemplateLoadFinished();
                                     }
                                 })
-                                .error(function (ret,status_code) {
-                                    if (status_code === 403) {
+                                .catch( (error) => {
+                                    if (error.status === 403) {
                                         /* user doesn't have access to see the project, no big deal. */
                                         $scope.disablePlaybookBecausePermissionDenied = true;
                                     } else {
@@ -112,7 +116,7 @@ export default
 
                             Rest.setUrl(GetBasePath('projects') + $scope.project + '/');
                             promises.push(Rest.get()
-                                .success(function (data) {
+                                .then(({data}) => {
                                     var msg;
                                     switch (data.status) {
                                     case 'failed':
@@ -130,7 +134,7 @@ export default
                                         Alert('Warning', msg, 'alert-info alert-info--noTextTransform', null, null, null, null, true);
                                     }
                                 })
-                                .error(function (data, status) {
+                                .catch(({data, status}) => {
                                     if (status === 403) {
                                         /* User doesn't have read access to the project, no problem. */
                                     } else {
@@ -142,6 +146,12 @@ export default
                             $q.all(promises)
                                 .then(function(){
                                     Wait('stop');
+                                })
+                                .catch(({data, status}) => {
+                                    ProcessErrors($scope, data, status, null, {
+                                        hdr: 'Error!',
+                                        msg: 'Call failed. Returned status: ' + status
+                                    });
                                 });
                         }
                     }
@@ -192,6 +202,12 @@ export default
                     multiple: true,
                     addNew: true
                 });
+
+                CreateSelect2({
+                    element: '#job_template_custom_virtualenv',
+                    multiple: false,
+                    opts: $scope.custom_virtualenvs_options
+                });
             }
 
             $scope.toggleForm = function(key) {
@@ -236,7 +252,12 @@ export default
                     default_val: dft
                 });
 
-                ParseTypeChange({ scope: $scope, field_id: 'job_template_variables', onChange: callback });
+                ParseTypeChange({
+                    scope: $scope,
+                    field_id: 'extra_vars',
+                    variable: 'extra_vars',
+                    onChange: callback
+                });
 
                 jobTemplateLoadFinished();
             });
@@ -258,9 +279,10 @@ export default
             $scope.removeLoadJobs = $scope.$on('LoadJobs', function() {
                 $scope.job_template_obj = jobTemplateData;
                 $scope.name = jobTemplateData.name;
+                $scope.breadcrumb.job_template_name = jobTemplateData.name;
                 var fld, i;
                 for (fld in form.fields) {
-                    if (fld !== 'variables' && fld !== 'survey' && fld !== 'forks' && jobTemplateData[fld] !== null && jobTemplateData[fld] !== undefined) {
+                    if (fld !== 'extra_vars' && fld !== 'survey' && fld !== 'forks' && jobTemplateData[fld] !== null && jobTemplateData[fld] !== undefined) {
                         if (form.fields[fld].type === 'select') {
                             if ($scope[fld + '_options'] && $scope[fld + '_options'].length > 0) {
                                 for (i = 0; i < $scope[fld + '_options'].length; i++) {
@@ -285,10 +307,10 @@ export default
                             master[fld] = $scope[fld];
                         }
                     }
-                    if (fld === 'variables') {
+                    if (fld === 'extra_vars') {
                         // Parse extra_vars, converting to YAML.
-                        $scope.variables = ParseVariableString(jobTemplateData.extra_vars);
-                        master.variables = $scope.variables;
+                        $scope.extra_vars = ParseVariableString(jobTemplateData.extra_vars);
+                        master.extra_vars = $scope.extra_vars;
                     }
                     if (form.fields[fld].type === 'lookup' && jobTemplateData.summary_fields[form.fields[fld].sourceModel]) {
                         $scope[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
@@ -356,75 +378,37 @@ export default
 
                 $scope.can_edit = jobTemplateData.summary_fields.user_capabilities.edit;
 
-                if($scope.job_template_obj.summary_fields.user_capabilities.edit) {
-                    MultiCredentialService.loadCredentials(jobTemplateData)
-                        .then(([selectedCredentials, credTypes, credTypeOptions,
-                            credTags, credentialGetPermissionDenied]) => {
-                                $scope.canGetAllRelatedResources = !projectGetPermissionDenied && !inventoryGetPermissionDenied && !credentialGetPermissionDenied ? true : false;
-                                $scope.selectedCredentials = selectedCredentials;
-                                $scope.credential_types = credTypes;
-                                $scope.credentialTypeOptions = credTypeOptions;
-                                $scope.credentialsToPost = credTags;
-                                $scope.$emit('jobTemplateLoaded', master);
-                            });
-                }
-                else {
+                const multiCredential = {};
+                const credentialTypesPromise = MultiCredentialService.getCredentialTypes()
+                    .then(({ data }) => {
+                        multiCredential.credentialTypes = data.results;
+                    });
+                const multiCredentialPromises = [credentialTypesPromise];
 
-                    if (jobTemplateData.summary_fields.credential) {
-                        $scope.selectedCredentials.machine = jobTemplateData.summary_fields.credential;
-                    }
-
-                    if (jobTemplateData.summary_fields.vault_credential) {
-                        $scope.selectedCredentials.vault = jobTemplateData.summary_fields.vault_credential;
-                    }
-
-                    if (jobTemplateData.summary_fields.extra_credentials) {
-                        $scope.selectedCredentials.extra = jobTemplateData.summary_fields.extra_credentials;
-                    }
-
-                    MultiCredentialService.getCredentialTypes()
-                        .then(({credential_types, credentialTypeOptions}) => {
-                            let typesArray = Object.keys(credential_types).map(key => credential_types[key]);
-                            let credTypeOptions = credentialTypeOptions;
-
-                            let machineAndVaultCreds = [],
-                                extraCreds = [];
-
-                            if($scope.selectedCredentials.machine) {
-                                machineAndVaultCreds.push($scope.selectedCredentials.machine);
+                if ($scope.can_edit) {
+                    const selectedCredentialsPromise =  MultiCredentialService
+                        .getRelated(jobTemplateData, { permitted: [403] })
+                        .then(({ data, status }) => {
+                            if (status === 403) {
+                                $scope.canGetAllRelatedResources = false;
+                                multiCredential.selectedCredentials = _.get(jobTemplateData, 'summary_fields.credentials');
+                            } else {
+                                $scope.canGetAllRelatedResources = !projectGetPermissionDenied && !inventoryGetPermissionDenied;
+                                multiCredential.selectedCredentials = data.results;
                             }
-                            if($scope.selectedCredentials.vault) {
-                                machineAndVaultCreds.push($scope.selectedCredentials.vault);
-                            }
-
-                            machineAndVaultCreds.map(cred => ({
-                                name: cred.name,
-                                id: cred.id,
-                                postType: cred.postType,
-                                kind: typesArray
-                                    .filter(type => {
-                                        return cred.kind === type.kind || parseInt(cred.credential_type) === type.value;
-                                    })[0].name + ":"
-                            }));
-
-                            if($scope.selectedCredentials.extra && $scope.selectedCredentials.extra.length > 0) {
-                                extraCreds = extraCreds.concat($scope.selectedCredentials.extra).map(cred => ({
-                                    name: cred.name,
-                                    id: cred.id,
-                                    postType: cred.postType,
-                                    kind: credTypeOptions
-                                        .filter(type => {
-                                            return parseInt(cred.credential_type_id) === type.value;
-                                        })[0].name + ":"
-                                }));
-                            }
-
-                            $scope.credentialsToPost = machineAndVaultCreds.concat(extraCreds);
-
-                            $scope.$emit('jobTemplateLoaded', master);
                         });
 
+                    multiCredentialPromises.push(selectedCredentialsPromise);
+                } else {
+                    $scope.canGetAllRelatedResources = false;
+                    multiCredential.selectedCredentials = _.get(jobTemplateData, 'summary_fields.credentials');
                 }
+
+                $q.all(multiCredentialPromises)
+                    .then(() => {
+                        $scope.multiCredential = multiCredential;
+                        $scope.$emit('jobTemplateLoaded', master);
+                    });
             });
 
             if ($scope.removeChoicesReady) {
@@ -496,15 +480,14 @@ export default
                 $scope.removeTemplateSaveSuccess();
             }
             $scope.removeTemplateSaveSuccess = $scope.$on('templateSaveSuccess', function(e, data) {
-                Wait('stop');
+
                 if (data.related &&
                     data.related.callback) {
                     Alert('Callback URL',
 `Host callbacks are enabled for this template. The callback URL is:
 <p style=\"padding: 10px 0;\">
     <strong>
-        ${$scope.callback_server_path}
-        ${data.related.callback}
+        ${$scope.callback_server_path}${data.related.callback}
     </strong>
 </p>
 <p>The host configuration key is:
@@ -517,11 +500,8 @@ export default
                         null, true);
                 }
 
-                MultiCredentialService
-                    .findChangedExtraCredentials({
-                        creds: $scope.selectedCredentials.extra,
-                        url: data.related.extra_credentials
-                    });
+                var credDefer = MultiCredentialService
+                    .saveRelated(jobTemplateData, $scope.multiCredential.selectedCredentials);
 
                 InstanceGroupsService.editInstanceGroups(instance_group_url, $scope.instance_groups)
                     .catch(({data, status}) => {
@@ -539,7 +519,7 @@ export default
                 var getNext = function(data, arr, resolve) {
                     Rest.setUrl(data.next);
                     Rest.get()
-                        .success(function (data) {
+                        .then(({data}) => {
                             if (data.next) {
                                 getNext(data, arr.concat(data.results), resolve);
                             } else {
@@ -551,7 +531,7 @@ export default
                 Rest.setUrl(data.related.labels);
 
                 Rest.get()
-                    .success(function(data) {
+                    .then(({data}) => {
                         if (data.next) {
                             getNext(data, data.results, associatedLabelsDefer);
                         } else {
@@ -578,7 +558,7 @@ export default
 
                 Rest.setUrl(GetBasePath("organizations"));
                 Rest.get()
-                    .success(function(data) {
+                    .then(({data}) => {
                         orgDefer.resolve(data.results[0].id);
                     });
 
@@ -600,12 +580,13 @@ export default
 
                         Rest.setUrl(data.related.labels);
 
-                        var defers = [];
+                        var defers = [credDefer];
                         for (var i = 0; i < toPost.length; i++) {
                             defers.push(Rest.post(toPost[i]));
                         }
                         $q.all(defers)
                             .then(function() {
+                                Wait('stop');
                                 saveCompleted();
                             });
                     });
@@ -633,7 +614,7 @@ export default
                 try {
                     for (fld in form.fields) {
                         if (form.fields[fld].type === 'select' &&
-                            fld !== 'playbook' && $scope[fld]) {
+                            fld !== 'playbook' && fld !== 'custom_virtualenv' && $scope[fld]) {
                             data[fld] = $scope[fld].value;
                         }
                         else if(form.fields[fld].type === 'checkbox_group') {
@@ -643,7 +624,7 @@ export default
                             }
                         }
                         else {
-                            if (fld !== 'variables' &&
+                            if (fld !== 'extra_vars' &&
                                 fld !== 'survey' &&
                                 fld !== 'forks') {
                                 data[fld] = $scope[fld];
@@ -663,24 +644,9 @@ export default
                     data.ask_credential_on_launch = $scope.ask_credential_on_launch ? $scope.ask_credential_on_launch : false;
                     data.job_tags = (Array.isArray($scope.job_tags)) ? $scope.job_tags.join() : "";
                     data.skip_tags = (Array.isArray($scope.skip_tags)) ? $scope.skip_tags.join() : "";
-                    if ($scope.selectedCredentials && $scope.selectedCredentials
-                        .machine && $scope.selectedCredentials
-                            .machine.id) {
-                                data.credential = $scope.selectedCredentials
-                                    .machine.id;
-                    } else {
-                        data.credential = null;
-                    }
-                    if ($scope.selectedCredentials && $scope.selectedCredentials
-                        .vault && $scope.selectedCredentials
-                            .vault.id) {
-                                data.vault_credential = $scope.selectedCredentials
-                                    .vault.id;
-                    } else {
-                        data.vault_credential = null;
-                    }
+
                     data.extra_vars = ToJSON($scope.parseType,
-                        $scope.variables, true);
+                        $scope.extra_vars, true);
 
                     // We only want to set the survey_enabled flag to
                     // true for this job template if a survey exists
@@ -719,13 +685,12 @@ export default
                     data.job_tags = (Array.isArray($scope.job_tags)) ? _.uniq($scope.job_tags).join() : "";
                     data.skip_tags = (Array.isArray($scope.skip_tags)) ?  _.uniq($scope.skip_tags).join() : "";
 
-
                     Rest.setUrl(defaultUrl + $state.params.job_template_id);
-                    Rest.put(data)
-                        .success(function (data) {
+                    Rest.patch(data)
+                        .then(({data}) => {
                             $scope.$emit('templateSaveSuccess', data);
                         })
-                        .error(function (data, status) {
+                        .catch(({data, status}) => {
                             ProcessErrors($scope, data, status, form, { hdr: 'Error!',
                                 msg: 'Failed to update job template. PUT returned status: ' + status });
                         });
@@ -740,49 +705,48 @@ export default
                 $state.go('templates');
             };
 
-            // Related set: Add button
-            $scope.add = function (set) {
-                $rootScope.flashMessage = null;
-                $location.path('/' + base + '/' + $stateParams.job_template_id + '/' + set);
-            };
+            let handleLabelCount = () => {
+                /**
+                 * This block of code specifically handles the client-side validation of the `labels` field.
+                 * Due to it's detached nature in relation to the other job template fields, we must
+                 * validate this field client-side in order to avoid the edge case where a user can make a
+                 * successful POST to the `job_templates` endpoint but however encounter a 200 error from
+                 * the `labels` endpoint due to a character limit.
+                 *
+                 * We leverage two of select2's available events, `select` and `unselect`, to detect when the user
+                 * has either added or removed a label. From there, we set a flag and do simple string length
+                 * checks to make sure a label's chacacter count remains under 512. Otherwise, we disable the "Save" button
+                 * by invalidating the field and inform the user of the error.
+                */
 
-            // Related set: Edit button
-            $scope.edit = function (set, id) {
-                $rootScope.flashMessage = null;
-                $location.path('/' + set + '/' + id);
-            };
+                $scope.job_template_labels_isValid = true;
+                const maxCount = 512;
+                const jt_label_id = 'job_template_labels';
 
-            // Launch a job using the selected template
-            $scope.launch = function() {
+                // Detect when a new label is added
+                $(`#${jt_label_id}`).on('select2:select', (e) => {
+                    const { text } = e.params.data;
 
-                if ($scope.removePromptForSurvey) {
-                    $scope.removePromptForSurvey();
-                }
-                $scope.removePromptForSurvey = $scope.$on('PromptForSurvey', function() {
-                    var action = function () {
-                            // $scope.$emit("GatherFormFields");
-                            Wait('start');
-                            $('#prompt-modal').modal('hide');
-                            $scope.addSurvey();
-
-                        };
-                    Prompt({
-                        hdr: 'Incomplete Survey',
-                        body: '<div class="Prompt-bodyQuery">Do you want to create a survey before proceeding?</div>',
-                        action: action
-                    });
+                    // If the character count of an added label is greater than 512, we set `labels` field as invalid
+                    if (text.length > maxCount) {
+                        $scope.job_template_form.labels.$setValidity(`${jt_label_id}`, false);
+                        $scope.job_template_labels_isValid = false;
+                    }
                 });
-                if($scope.survey_enabled === true && $scope.survey_exists!==true){
-                    $scope.$emit("PromptForSurvey");
-                }
-                else {
 
-                    InitiatePlaybookRun({
-                        scope: $scope,
-                        id: id,
-                        job_type: 'job_template'
-                    });
-                }
+                // Detect when a label is removed
+                $(`#${jt_label_id}`).on('select2:unselect', (e) => {
+                    const { text } = e.params.data;
+
+                    /* If the character count of a removed label is greater than 512 AND the field is currently marked
+                       as invalid, we set it back to valid */
+                    if (text.length > maxCount && $scope.job_template_form.labels.$error) {
+                        $scope.job_template_form.labels.$setValidity(`${jt_label_id}`, true);
+                        $scope.job_template_labels_isValid = true;
+                    }
+                });
             };
+
+            handleLabelCount();
         }
     ];

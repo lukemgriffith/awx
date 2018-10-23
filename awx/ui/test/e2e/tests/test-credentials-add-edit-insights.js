@@ -1,5 +1,7 @@
 import uuid from 'uuid';
 
+import { AWX_E2E_TIMEOUT_LONG } from '../settings';
+
 const testID = uuid().substr(0, 8);
 
 const store = {
@@ -21,7 +23,7 @@ module.exports = {
 
         client.inject(
             [store, 'OrganizationModel'],
-            (_store_, Model) => new Model().http.post(_store_.organization),
+            (_store_, Model) => new Model().http.post({ data: _store_.organization }),
             ({ data }) => { store.organization = data; }
         );
 
@@ -123,7 +125,7 @@ module.exports = {
         const row = '#credentials_table tbody tr';
 
         credentials.section.list.section.search
-            .waitForElementVisible('@input', client.globals.longWait)
+            .waitForElementVisible('@input', AWX_E2E_TIMEOUT_LONG)
             .setValue('@input', `name:${store.credential.name}`)
             .click('@searchButton');
 

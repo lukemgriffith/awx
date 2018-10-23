@@ -1,24 +1,35 @@
 # Python
+import os
 import json
-from copy import copy
+from copy import copy, deepcopy
+
+import six
 
 # Django
+from django.apps import apps
+from django.conf import settings
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth.models import User # noqa
+from django.utils.translation import ugettext_lazy as _
+from django.core.exceptions import ValidationError
+from django.db.models.query import QuerySet
 
 # AWX
 from awx.main.models.base import prevent_search
 from awx.main.models.rbac import (
     Role, RoleAncestorEntry, get_roles_on_resource
 )
-from awx.main.utils import parse_yaml_or_json
-from awx.main.fields import JSONField
+from awx.main.utils import parse_yaml_or_json, get_custom_venv_choices
+from awx.main.utils.encryption import decrypt_value, get_encryption_key, is_encrypted
+from awx.main.utils.polymorphic import build_polymorphic_ctypes_map
+from awx.main.fields import JSONField, AskForField
+from awx.main.constants import ACTIVE_STATES
 
 
 __all__ = ['ResourceMixin', 'SurveyJobTemplateMixin', 'SurveyJobMixin',
            'TaskManagerUnifiedJobMixin', 'TaskManagerJobMixin', 'TaskManagerProjectUpdateMixin',
-           'TaskManagerInventoryUpdateMixin',]
+           'TaskManagerInventoryUpdateMixin', 'CustomVirtualEnvMixin']
 
 
 class ResourceMixin(models.Model):
@@ -92,6 +103,11 @@ class SurveyJobTemplateMixin(models.Model):
         blank=True,
         default={},
     ))
+    ask_variables_on_launch = AskForField(
+        blank=True,
+        default=False,
+        allows_field='extra_vars'
+    )
 
     def survey_password_variables(self):
         vars = []
@@ -135,21 +151,27 @@ class SurveyJobTemplateMixin(models.Model):
         else:
             runtime_extra_vars = {}
 
-        # Overwrite with job template extra vars with survey default vars
+        # Overwrite job template extra vars with survey default vars
         if self.survey_enabled and 'spec' in self.survey_spec:
             for survey_element in self.survey_spec.get("spec", []):
                 default = survey_element.get('default')
                 variable_key = survey_element.get('variable')
 
                 if survey_element.get('type') == 'password':
-                    if variable_key in runtime_extra_vars and default:
+                    if variable_key in runtime_extra_vars:
                         kw_value = runtime_extra_vars[variable_key]
-                        if kw_value.startswith('$encrypted$') and kw_value != default:
-                            runtime_extra_vars[variable_key] = default
+                        if kw_value == '$encrypted$':
+                            runtime_extra_vars.pop(variable_key)
 
                 if default is not None:
-                    data = {variable_key: default}
-                    errors = self._survey_element_validation(survey_element, data)
+                    decrypted_default = default
+                    if (
+                        survey_element['type'] == "password" and
+                        isinstance(decrypted_default, six.string_types) and
+                        decrypted_default.startswith('$encrypted$')
+                    ):
+                        decrypted_default = decrypt_value(get_encryption_key('value', pk=None), decrypted_default)
+                    errors = self._survey_element_validation(survey_element, {variable_key: decrypted_default})
                     if not errors:
                         survey_defaults[variable_key] = default
         extra_vars.update(survey_defaults)
@@ -160,13 +182,28 @@ class SurveyJobTemplateMixin(models.Model):
         create_kwargs['extra_vars'] = json.dumps(extra_vars)
         return create_kwargs
 
-    def _survey_element_validation(self, survey_element, data):
+    def _survey_element_validation(self, survey_element, data, validate_required=True):
+        # Don't apply validation to the `$encrypted$` placeholder; the decrypted
+        # default (if any) will be validated against instead
         errors = []
+
+        if (survey_element['type'] == "password"):
+            password_value = data.get(survey_element['variable'])
+            if (
+                isinstance(password_value, six.string_types) and
+                password_value == '$encrypted$'
+            ):
+                if survey_element.get('default') is None and survey_element['required']:
+                    if validate_required:
+                        errors.append("'%s' value missing" % survey_element['variable'])
+                return errors
+
         if survey_element['variable'] not in data and survey_element['required']:
-            errors.append("'%s' value missing" % survey_element['variable'])
+            if validate_required:
+                errors.append("'%s' value missing" % survey_element['variable'])
         elif survey_element['type'] in ["textarea", "text", "password"]:
             if survey_element['variable'] in data:
-                if type(data[survey_element['variable']]) not in (str, unicode):
+                if not isinstance(data[survey_element['variable']], six.string_types):
                     errors.append("Value %s for '%s' expected to be a string." % (data[survey_element['variable']],
                                                                                   survey_element['variable']))
                     return errors
@@ -210,7 +247,7 @@ class SurveyJobTemplateMixin(models.Model):
                     errors.append("'%s' value is expected to be a list." % survey_element['variable'])
                 else:
                     choice_list = copy(survey_element['choices'])
-                    if isinstance(choice_list, basestring):
+                    if isinstance(choice_list, six.string_types):
                         choice_list = choice_list.split('\n')
                     for val in data[survey_element['variable']]:
                         if val not in choice_list:
@@ -218,7 +255,7 @@ class SurveyJobTemplateMixin(models.Model):
                                                                                            choice_list))
         elif survey_element['type'] == 'multiplechoice':
             choice_list = copy(survey_element['choices'])
-            if isinstance(choice_list, basestring):
+            if isinstance(choice_list, six.string_types):
                 choice_list = choice_list.split('\n')
             if survey_element['variable'] in data:
                 if data[survey_element['variable']] not in choice_list:
@@ -226,6 +263,65 @@ class SurveyJobTemplateMixin(models.Model):
                                                                                    survey_element['variable'],
                                                                                    choice_list))
         return errors
+
+    def _accept_or_ignore_variables(self, data, errors=None, _exclude_errors=(), extra_passwords=None):
+        survey_is_enabled = (self.survey_enabled and self.survey_spec)
+        extra_vars = data.copy()
+        if errors is None:
+            errors = {}
+        rejected = {}
+        accepted = {}
+
+        if survey_is_enabled:
+            # Check for data violation of survey rules
+            survey_errors = []
+            for survey_element in self.survey_spec.get("spec", []):
+                key = survey_element.get('variable', None)
+                value = data.get(key, None)
+                validate_required = 'required' not in _exclude_errors
+                if extra_passwords and key in extra_passwords and is_encrypted(value):
+                    element_errors = self._survey_element_validation(survey_element, {
+                        key: decrypt_value(get_encryption_key('value', pk=None), value)
+                    }, validate_required=validate_required)
+                else:
+                    element_errors = self._survey_element_validation(
+                        survey_element, data, validate_required=validate_required)
+
+                if element_errors:
+                    survey_errors += element_errors
+                    if key is not None and key in extra_vars:
+                        rejected[key] = extra_vars.pop(key)
+                elif key in extra_vars:
+                    accepted[key] = extra_vars.pop(key)
+            if survey_errors:
+                errors['variables_needed_to_start'] = survey_errors
+
+        if self.ask_variables_on_launch:
+            # We can accept all variables
+            accepted.update(extra_vars)
+            extra_vars = {}
+
+        if extra_vars:
+            # Leftover extra_vars, keys provided that are not allowed
+            rejected.update(extra_vars)
+            # ignored variables does not block manual launch
+            if 'prompts' not in _exclude_errors:
+                errors['extra_vars'] = [_('Variables {list_of_keys} are not allowed on launch. Check the Prompt on Launch setting '+
+                                        'on the Job Template to include Extra Variables.').format(
+                    list_of_keys=', '.join(extra_vars.keys()))]
+
+        return (accepted, rejected, errors)
+
+    @staticmethod
+    def pivot_spec(spec):
+        '''
+        Utility method that will return a dictionary keyed off variable names
+        '''
+        pivoted = {}
+        for element_data in spec.get('spec', []):
+            if 'variable' in element_data:
+                pivoted[element_data['variable']] = element_data
+        return pivoted
 
     def survey_variable_validation(self, data):
         errors = []
@@ -238,6 +334,17 @@ class SurveyJobTemplateMixin(models.Model):
         for survey_element in self.survey_spec.get("spec", []):
             errors += self._survey_element_validation(survey_element, data)
         return errors
+
+    def display_survey_spec(self):
+        '''
+        Hide encrypted default passwords in survey specs
+        '''
+        survey_spec = deepcopy(self.survey_spec) if self.survey_spec else {}
+        for field in survey_spec.get('spec', []):
+            if field.get('type') == 'password':
+                if 'default' in field and field['default']:
+                    field['default'] = '$encrypted$'
+        return survey_spec
 
 
 class SurveyJobMixin(models.Model):
@@ -263,6 +370,20 @@ class SurveyJobMixin(models.Model):
         else:
             return self.extra_vars
 
+    def decrypted_extra_vars(self):
+        '''
+        Decrypts fields marked as passwords in survey.
+        '''
+        if self.survey_passwords:
+            extra_vars = json.loads(self.extra_vars)
+            for key in self.survey_passwords:
+                value = extra_vars.get(key)
+                if value and isinstance(value, six.string_types) and value.startswith('$encrypted$'):
+                    extra_vars[key] = decrypt_value(get_encryption_key('value', pk=None), value)
+            return json.dumps(extra_vars)
+        else:
+            return self.extra_vars
+
 
 class TaskManagerUnifiedJobMixin(models.Model):
     class Meta:
@@ -278,6 +399,9 @@ class TaskManagerUnifiedJobMixin(models.Model):
 class TaskManagerJobMixin(TaskManagerUnifiedJobMixin):
     class Meta:
         abstract = True
+
+    def get_jobs_fail_chain(self):
+        return [self.project_update] if self.project_update else []
 
     def dependent_jobs_finished(self):
         for j in self.dependent_jobs.all():
@@ -302,3 +426,54 @@ class TaskManagerProjectUpdateMixin(TaskManagerUpdateOnLaunchMixin):
 class TaskManagerInventoryUpdateMixin(TaskManagerUpdateOnLaunchMixin):
     class Meta:
         abstract = True
+
+
+class CustomVirtualEnvMixin(models.Model):
+    class Meta:
+        abstract = True
+
+    custom_virtualenv = models.CharField(
+        blank=True,
+        null=True,
+        default=None,
+        max_length=100,
+        help_text=_('Local absolute file path containing a custom Python virtualenv to use')
+    )
+
+    def clean_custom_virtualenv(self):
+        value = self.custom_virtualenv
+        if value and os.path.join(value, '') not in get_custom_venv_choices():
+            raise ValidationError(
+                _('{} is not a valid virtualenv in {}').format(value, settings.BASE_VENV_PATH)
+            )
+        if value:
+            return os.path.join(value, '')
+        return None
+
+
+class RelatedJobsMixin(object):
+
+    '''
+    This method is intended to be overwritten.
+    Called by get_active_jobs()
+    Returns a list of active jobs (i.e. running) associated with the calling
+    resource (self). Expected to return a QuerySet
+    '''
+    def _get_related_jobs(self):
+        return self.objects.none()
+
+    def _get_active_jobs(self):
+        return self._get_related_jobs().filter(status__in=ACTIVE_STATES)
+
+    '''
+    Returns [{'id': 1, 'type': 'job'}, {'id': 2, 'type': 'project_update'}, ...]
+    '''
+    def get_active_jobs(self):
+        UnifiedJob = apps.get_model('main', 'UnifiedJob')
+        mapping = build_polymorphic_ctypes_map(UnifiedJob)
+        jobs = self._get_active_jobs()
+        if not isinstance(jobs, QuerySet):
+            raise RuntimeError("Programmer error. Expected _get_active_jobs() to return a QuerySet.")
+
+        return [dict(id=t[0], type=mapping[t[1]]) for t in jobs.values_list('id', 'polymorphic_ctype_id')]
+

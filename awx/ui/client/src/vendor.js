@@ -18,8 +18,18 @@ global.$ = global.jQuery;
 
 require('jquery-resize');
 require('jquery-ui');
+require('jquery-ui/ui/widgets/button');
+require('jquery-ui/ui/widgets/dialog');
+require('jquery-ui/ui/widgets/slider');
+require('jquery-ui/ui/widgets/spinner');
 require('bootstrap');
 require('bootstrap-datepicker');
+
+// jquery-ui and bootstrap both define $.fn.button
+// the code below resolves that namespace clash
+const btn = $.fn.button.noConflict();
+$.fn.btn = btn;
+
 require('select2');
 
 // Standalone libs
@@ -51,3 +61,5 @@ require('ng-toast-provider');
 require('ng-toast-directives');
 require('ng-toast');
 require('lr-infinite-scroll');
+require('codemirror/mode/yaml/yaml');
+require('codemirror/mode/javascript/javascript');

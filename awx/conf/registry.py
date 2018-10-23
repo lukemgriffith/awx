@@ -120,6 +120,9 @@ class SettingsRegistry(object):
     def is_setting_read_only(self, setting):
         return bool(self._registry.get(setting, {}).get('read_only', False))
 
+    def get_setting_category(self, setting):
+        return self._registry.get(setting, {}).get('category_slug', None)
+
     def get_setting_field(self, setting, mixin_class=None, for_user=False, **kwargs):
         from rest_framework.fields import empty
         field_kwargs = {}
@@ -159,14 +162,14 @@ class SettingsRegistry(object):
         if category_slug == 'user' and for_user:
             try:
                 field_instance.default = original_field_instance.to_representation(getattr(self.settings, setting))
-            except:
+            except Exception:
                 logger.warning('Unable to retrieve default value for user setting "%s".', setting, exc_info=True)
         elif not field_instance.read_only or field_instance.default is empty or field_instance.defined_in_file:
             try:
                 field_instance.default = original_field_instance.to_representation(self.settings._awx_conf_settings._get_default(setting))
             except AttributeError:
                 pass
-            except:
+            except Exception:
                 logger.warning('Unable to retrieve default value for setting "%s".', setting, exc_info=True)
 
         # `PENDO_TRACKING_STATE` is disabled for the open source awx license

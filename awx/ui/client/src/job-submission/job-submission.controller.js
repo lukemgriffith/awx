@@ -83,7 +83,8 @@ export default
                 LaunchJob({
                     scope: $scope,
                     url: launch_url,
-                    submitJobType: $scope.submitJobType
+                    submitJobType: $scope.submitJobType,
+                    relaunchHostType: $scope.relaunchHostType
                 });
             };
 
@@ -152,7 +153,7 @@ export default
                 Wait('start');
                 Rest.setUrl(launch_url);
                 Rest.get()
-                .success(function (data) {
+                .then(({data}) => {
 
                     // Put all the data that we get back about the launch onto scope
                     angular.extend($scope, data);
@@ -179,26 +180,26 @@ export default
 
                     if ($scope.has_other_prompts) {
                         Rest.options()
-                        .success(options => {
+                        .then(options => {
                             if ($scope.ask_job_type_on_launch) {
-                                let choices = getChoices(options, 'actions.POST.job_type.choices');
+                                let choices = getChoices(options.data, 'actions.POST.job_type.choices');
                                 let initialValue = _.get(data, 'defaults.job_type');
                                 let initialChoice = getChoiceFromValue(choices, initialValue);
                                 $scope.other_prompt_data.job_type_options = choices;
                                 $scope.other_prompt_data.job_type = initialChoice;
                             }
                             if ($scope.ask_verbosity_on_launch) {
-                                let choices = getChoices(options, 'actions.POST.verbosity.choices');
+                                let choices = getChoices(options.data, 'actions.POST.verbosity.choices');
                                 let initialValue = _.get(data, 'defaults.verbosity');
                                 let initialChoice = getChoiceFromValue(choices, initialValue);
                                 $scope.other_prompt_data.verbosity_options = choices;
                                 $scope.other_prompt_data.verbosity = initialChoice;
                             }
                         })
-                        .error((err, status) => {
-                            ProcessErrors($scope, err, status, null, {
+                        .catch((error) => {
+                            ProcessErrors($scope, error.data, error.status, null, {
                                 hdr: 'Error!',
-                                msg: `Failed to get ${launch_url}. OPTIONS status: ${status}`
+                                msg: `Failed to get ${launch_url}. OPTIONS status: ${error.status}`
                             });
                         });
                     }
@@ -260,7 +261,8 @@ export default
                             // Go out and get the credential types
                             Rest.setUrl(GetBasePath('credential_types'));
                             Rest.get()
-                            .success(function (credentialTypeData) {
+                            .then( (response) => {
+                                let credentialTypeData = response.data;
                                 let credential_types = {};
                                 $scope.credentialTypeOptions = [];
                                 credentialTypeData.results.forEach((credentialType => {
@@ -273,6 +275,12 @@ export default
                                     }
                                 }));
                                 $scope.credential_types = credential_types;
+                            })
+                            .catch(({data, status}) => {
+                                ProcessErrors($scope, data, status, null, {
+                                    hdr: 'Error!',
+                                    msg: 'Failed to get credential types. GET status: ' + status
+                                });
                             });
 
                             // Figure out which step the user needs to start on
@@ -296,7 +304,8 @@ export default
                             // Go out and get some of the job details like inv, cred, name
                             Rest.setUrl(GetBasePath('jobs') + $scope.submitJobId);
                             Rest.get()
-                            .success(function (jobResultData) {
+                            .then( (response) => {
+                                let jobResultData = response.data;
                                 $scope.job_template_data = {
                                     name: jobResultData.name
                                 };
@@ -311,7 +320,7 @@ export default
                                 }
                                 initiateModal();
                             })
-                            .error(function(data, status) {
+                            .catch(({data, status}) => {
                                 ProcessErrors($scope, data, status, null, { hdr: 'Error!',
                                 msg: 'Failed to get job details. GET returned status: ' + status });
                             });
@@ -324,7 +333,7 @@ export default
                     }
 
                 })
-                .error(function (data, status) {
+                .catch(({data, status}) => {
                     ProcessErrors($scope, data, status, null, { hdr: 'Error!',
                     msg: 'Failed to get job template details. GET returned status: ' + status });
                 });
@@ -385,20 +394,9 @@ export default
                 }
             };
 
-            $scope.toggle_inventory = function(id) {
-                $scope.inventories.forEach(function(row, i) {
-                    if (row.id === id) {
-                        $scope.selected_inventory = angular.copy(row);
-                        $scope.inventories[i].checked = 1;
-                    } else {
-                        $scope.inventories[i].checked = 0;
-                    }
-                });
-            };
-
-            $scope.toggle_credential = function(id) {
+            $scope.toggle_credential = function(cred) {
                 $scope.credentials.forEach(function(row, i) {
-                    if (row.id === id) {
+                    if (row.id === cred.id) {
                         $scope.selected_credentials.machine = angular.copy(row);
                         $scope.credentials[i].checked = 1;
                     } else {

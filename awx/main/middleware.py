@@ -1,30 +1,73 @@
 # Copyright (c) 2015 Ansible, Inc.
 # All Rights Reserved.
 
+import base64
+import json
 import logging
 import threading
 import uuid
 import six
+import time
+import cProfile
+import pstats
+import os
+import re
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models.signals import post_save
 from django.db.migrations.executor import MigrationExecutor
 from django.db import IntegrityError, connection
+from django.http import HttpResponse
 from django.utils.functional import curry
 from django.shortcuts import get_object_or_404, redirect
 from django.apps import apps
 from django.utils.translation import ugettext_lazy as _
 from django.core.urlresolvers import reverse
+from django.urls import resolve
 
 from awx.main.models import ActivityStream
-from awx.api.authentication import TokenAuthentication
 from awx.main.utils.named_url_graph import generate_graph, GraphNode
 from awx.conf import fields, register
 
 
 logger = logging.getLogger('awx.main.middleware')
 analytics_logger = logging.getLogger('awx.analytics.activity_stream')
+perf_logger = logging.getLogger('awx.analytics.performance')
+
+
+class TimingMiddleware(threading.local):
+
+    dest = '/var/lib/awx/profile'
+
+    def process_request(self, request):
+        self.start_time = time.time()
+        if settings.AWX_REQUEST_PROFILE:
+            self.prof = cProfile.Profile()
+            self.prof.enable()
+
+    def process_response(self, request, response):
+        if not hasattr(self, 'start_time'):  # some tools may not invoke process_request
+            return response
+        total_time = time.time() - self.start_time
+        response['X-API-Total-Time'] = '%0.3fs' % total_time
+        if settings.AWX_REQUEST_PROFILE:
+            self.prof.disable()
+            cprofile_file = self.save_profile_file(request)
+            response['cprofile_file'] = cprofile_file
+        perf_logger.info('api response times', extra=dict(python_objects=dict(request=request, response=response)))
+        return response
+
+    def save_profile_file(self, request):
+        if not os.path.isdir(self.dest):
+            os.makedirs(self.dest)
+        filename = '%.3fs-%s' % (pstats.Stats(self.prof).total_tt, uuid.uuid4())
+        filepath = os.path.join(self.dest, filename)
+        with open(filepath, 'w') as f:
+            f.write('%s %s\n' % (request.method, request.get_full_path()))
+            pstats.Stats(self.prof, stream=f).sort_stats('cumulative').print_stats()
+        return filepath
 
 
 class ActivityStreamMiddleware(threading.local):
@@ -81,18 +124,18 @@ class ActivityStreamMiddleware(threading.local):
                     self.instance_ids.append(instance.id)
 
 
-class AuthTokenTimeoutMiddleware(object):
-    """Presume that when the user includes the auth header, they go through the
-    authentication mechanism. Further, that mechanism is presumed to extend
-    the users session validity time by AUTH_TOKEN_EXPIRATION.
-
-    If the auth token is not supplied, then don't include the header
+class SessionTimeoutMiddleware(object):
     """
-    def process_response(self, request, response):
-        if not TokenAuthentication._get_x_auth_token_header(request):
-            return response
+    Resets the session timeout for both the UI and the actual session for the API
+    to the value of SESSION_COOKIE_AGE on every request if there is a valid session.
+    """
 
-        response['Auth-Token-Timeout'] = int(settings.AUTH_TOKEN_EXPIRATION)
+    def process_response(self, request, response):
+        req_session = getattr(request, 'session', None)
+        if req_session and not req_session.is_empty():
+            expiry = int(settings.SESSION_COOKIE_AGE)
+            request.session.set_expiry(expiry)
+            response['Session-Timeout'] = expiry
         return response
 
 
@@ -155,7 +198,7 @@ class URLModificationMiddleware(object):
         return '/'.join(url_units)
 
     def process_request(self, request):
-        if 'REQUEST_URI' in request.environ:
+        if hasattr(request, 'environ') and 'REQUEST_URI' in request.environ:
             old_path = six.moves.urllib.parse.urlsplit(request.environ['REQUEST_URI']).path
             old_path = old_path[request.path.find(request.path_info):]
         else:
@@ -166,10 +209,64 @@ class URLModificationMiddleware(object):
             request.path_info = new_path
 
 
+class DeprecatedAuthTokenMiddleware(object):
+    """
+    Used to emulate support for the old Auth Token endpoint to ease the
+    transition to OAuth2.0.  Specifically, this middleware:
+
+    1.  Intercepts POST requests to `/api/v2/authtoken/` (which now no longer
+        _actually_ exists in our urls.py)
+    2.  Rewrites `request.path` to `/api/v2/users/N/personal_tokens/`
+    3.  Detects the username and password in the request body (either in JSON,
+        or form-encoded variables) and builds an appropriate HTTP_AUTHORIZATION
+        Basic header
+    """
+
+    def process_request(self, request):
+        if re.match('^/api/v[12]/authtoken/?$', request.path):
+            if request.method != 'POST':
+                return HttpResponse('HTTP {} is not allowed.'.format(request.method), status=405)
+            try:
+                payload = json.loads(request.body)
+            except (ValueError, TypeError):
+                payload = request.POST
+            if 'username' not in payload or 'password' not in payload:
+                return HttpResponse('Unable to login with provided credentials.', status=401)
+            username = payload['username']
+            password = payload['password']
+            try:
+                pk = User.objects.get(username=username).pk
+            except ObjectDoesNotExist:
+                return HttpResponse('Unable to login with provided credentials.', status=401)
+            new_path = reverse('api:user_personal_token_list', kwargs={
+                'pk': pk,
+                'version': 'v2'
+            })
+            request._body = ''
+            request.META['CONTENT_TYPE'] = 'application/json'
+            request.path = request.path_info = new_path
+            auth = ' '.join([
+                'Basic',
+                base64.b64encode(
+                    six.text_type('{}:{}').format(username, password)
+                )
+            ])
+            request.environ['HTTP_AUTHORIZATION'] = auth
+            logger.warn(
+                'The Auth Token API (/api/v2/authtoken/) is deprecated and will '
+                'be replaced with OAuth2.0 in the next version of Ansible Tower '
+                '(see /api/o/ for more details).'
+            )
+        elif request.environ.get('HTTP_AUTHORIZATION', '').startswith('Token '):
+            token = request.environ['HTTP_AUTHORIZATION'].split(' ', 1)[-1].strip()
+            request.environ['HTTP_AUTHORIZATION'] = six.text_type('Bearer {}').format(token)
+
+
 class MigrationRanCheckMiddleware(object):
 
     def process_request(self, request):
         executor = MigrationExecutor(connection)
         plan = executor.migration_plan(executor.loader.graph.leaf_nodes())
-        if bool(plan) and 'migrations_notran' not in request.path:
+        if bool(plan) and \
+                getattr(resolve(request.path), 'url_name', '') != 'migrations_notran':
             return redirect(reverse("ui:migrations_notran"))

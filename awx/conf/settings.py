@@ -2,17 +2,23 @@
 from collections import namedtuple
 import contextlib
 import logging
+import re
 import sys
 import threading
 import time
+import StringIO
+import traceback
+import urllib
 
 import six
 
 # Django
+from django.conf import LazySettings
 from django.conf import settings, UserSettingsHolder
 from django.core.cache import cache as django_cache
 from django.core.exceptions import ImproperlyConfigured
-from django.db import ProgrammingError, OperationalError
+from django.db import ProgrammingError, OperationalError, transaction, connection
+from django.utils.functional import cached_property
 
 # Django REST Framework
 from rest_framework.fields import empty, SkipField
@@ -56,17 +62,77 @@ SETTING_CACHE_DEFAULTS = True
 __all__ = ['SettingsWrapper', 'get_settings_to_cache', 'SETTING_CACHE_NOTSET']
 
 
+def normalize_broker_url(value):
+    parts = value.rsplit('@', 1)
+    match = re.search('(amqp://[^:]+:)(.*)', parts[0])
+    if match:
+        prefix, password = match.group(1), match.group(2)
+        parts[0] = prefix + urllib.quote(password)
+    return '@'.join(parts)
+
+
 @contextlib.contextmanager
-def _log_database_error():
+def _ctit_db_wrapper(trans_safe=False):
+    '''
+    Wrapper to avoid undesired actions by Django ORM when managing settings
+    if only getting a setting, can use trans_safe=True, which will avoid
+    throwing errors if the prior context was a broken transaction.
+    Any database errors will be logged, but exception will be suppressed.
+    '''
+    rollback_set = None
+    is_atomic = None
     try:
+        if trans_safe:
+            is_atomic = connection.in_atomic_block
+            if is_atomic:
+                rollback_set = transaction.get_rollback()
+                if rollback_set:
+                    logger.debug('Obtaining database settings in spite of broken transaction.')
+                    transaction.set_rollback(False)
         yield
-    except (ProgrammingError, OperationalError) as e:
-        if get_tower_migration_version() < '310':
+    except (ProgrammingError, OperationalError):
+        if 'migrate' in sys.argv and get_tower_migration_version() < '310':
             logger.info('Using default settings until version 3.1 migration.')
         else:
-            logger.warning('Database settings are not available, using defaults (%s)', e, exc_info=True)
+            # We want the _full_ traceback with the context
+            # First we get the current call stack, which constitutes the "top",
+            # it has the context up to the point where the context manager is used
+            top_stack = StringIO.StringIO()
+            traceback.print_stack(file=top_stack)
+            top_lines = top_stack.getvalue().strip('\n').split('\n')
+            top_stack.close()
+            # Get "bottom" stack from the local error that happened
+            # inside of the "with" block this wraps
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            bottom_stack = StringIO.StringIO()
+            traceback.print_tb(exc_traceback, file=bottom_stack)
+            bottom_lines = bottom_stack.getvalue().strip('\n').split('\n')
+            # Glue together top and bottom where overlap is found
+            bottom_cutoff = 0
+            for i, line in enumerate(bottom_lines):
+                if line in top_lines:
+                    # start of overlapping section, take overlap from bottom
+                    top_lines = top_lines[:top_lines.index(line)]
+                    bottom_cutoff = i
+                    break
+            bottom_lines = bottom_lines[bottom_cutoff:]
+            tb_lines = top_lines + bottom_lines
+
+            tb_string = '\n'.join(
+                ['Traceback (most recent call last):'] +
+                tb_lines +
+                ['{}: {}'.format(exc_type.__name__, str(exc_value))]
+            )
+            bottom_stack.close()
+            # Log the combined stack
+            if trans_safe:
+                if 'check_migrations' not in sys.argv:
+                    logger.warning('Database settings are not available, using defaults, error:\n{}'.format(tb_string))
+            else:
+                logger.error('Error modifying something related to database settings.\n{}'.format(tb_string))
     finally:
-        pass
+        if trans_safe and is_atomic and rollback_set:
+            transaction.set_rollback(rollback_set)
 
 
 def filter_sensitive(registry, key, value):
@@ -229,7 +295,8 @@ class SettingsWrapper(UserSettingsHolder):
         self.__dict__['cache'] = EncryptedCacheProxy(cache, registry)
         self.__dict__['registry'] = registry
 
-    def _get_supported_settings(self):
+    @cached_property
+    def all_supported_settings(self):
         return self.registry.get_registered_settings()
 
     def _preload_cache(self):
@@ -272,7 +339,7 @@ class SettingsWrapper(UserSettingsHolder):
                 setting_ids[setting.key] = setting.id
                 try:
                     value = decrypt_field(setting, 'value')
-                except ValueError, e:
+                except ValueError as e:
                     #TODO: Remove in Tower 3.3
                     logger.debug('encountered error decrypting field: %s - attempting fallback to old', e)
                     value = old_decrypt_field(setting, 'value')
@@ -302,7 +369,7 @@ class SettingsWrapper(UserSettingsHolder):
         settings_to_cache['_awx_conf_preload_expires'] = self._awx_conf_preload_expires
         self.cache.set_many(settings_to_cache, timeout=SETTING_CACHE_TIMEOUT)
 
-    def _get_local(self, name):
+    def _get_local(self, name, validate=True):
         self._preload_cache()
         cache_key = Setting.get_cache_key(name)
         try:
@@ -365,8 +432,11 @@ class SettingsWrapper(UserSettingsHolder):
                     field.run_validators(internal_value)
                     return internal_value
                 else:
-                    return field.run_validation(value)
-            except:
+                    if validate:
+                        return field.run_validation(value)
+                    else:
+                        return value
+            except Exception:
                 logger.warning(
                     'The current value "%r" for setting "%s" is invalid.',
                     value, name, exc_info=True)
@@ -381,12 +451,21 @@ class SettingsWrapper(UserSettingsHolder):
 
     def __getattr__(self, name):
         value = empty
-        if name in self._get_supported_settings():
-            with _log_database_error():
+        if name in self.all_supported_settings:
+            with _ctit_db_wrapper(trans_safe=True):
                 value = self._get_local(name)
         if value is not empty:
             return value
-        return self._get_default(name)
+        value = self._get_default(name)
+        # sometimes users specify RabbitMQ passwords that contain
+        # unescaped : and @ characters that confused urlparse, e.g.,
+        # amqp://guest:a@ns:ibl3#@localhost:5672//
+        #
+        # detect these scenarios, and automatically escape the user's
+        # password so it just works
+        if name == 'BROKER_URL':
+            value = normalize_broker_url(value)
+        return value
 
     def _set_local(self, name, value):
         field = self.registry.get_setting_field(name)
@@ -413,8 +492,8 @@ class SettingsWrapper(UserSettingsHolder):
             # post_save handler will delete from cache when changed.
 
     def __setattr__(self, name, value):
-        if name in self._get_supported_settings():
-            with _log_database_error():
+        if name in self.all_supported_settings:
+            with _ctit_db_wrapper():
                 self._set_local(name, value)
         else:
             setattr(self.default_settings, name, value)
@@ -429,17 +508,17 @@ class SettingsWrapper(UserSettingsHolder):
             # pre_delete handler will delete from cache.
 
     def __delattr__(self, name):
-        if name in self._get_supported_settings():
-            with _log_database_error():
+        if name in self.all_supported_settings:
+            with _ctit_db_wrapper():
                 self._del_local(name)
         else:
             delattr(self.default_settings, name)
 
     def __dir__(self):
         keys = []
-        with _log_database_error():
+        with _ctit_db_wrapper(trans_safe=True):
             for setting in Setting.objects.filter(
-                    key__in=self._get_supported_settings(), user__isnull=True):
+                    key__in=self.all_supported_settings, user__isnull=True):
                 # Skip returning settings that have been overridden but are
                 # considered to be "not set".
                 if setting.value is None and SETTING_CACHE_NOTSET == SETTING_CACHE_NONE:
@@ -453,8 +532,24 @@ class SettingsWrapper(UserSettingsHolder):
 
     def is_overridden(self, setting):
         set_locally = False
-        if setting in self._get_supported_settings():
-            with _log_database_error():
+        if setting in self.all_supported_settings:
+            with _ctit_db_wrapper(trans_safe=True):
                 set_locally = Setting.objects.filter(key=setting, user__isnull=True).exists()
         set_on_default = getattr(self.default_settings, 'is_overridden', lambda s: False)(setting)
         return (set_locally or set_on_default)
+
+
+def __getattr_without_cache__(self, name):
+    # Django 1.10 added an optimization to settings lookup:
+    # https://code.djangoproject.com/ticket/27625
+    # https://github.com/django/django/commit/c1b221a9b913315998a1bcec2f29a9361a74d1ac
+    # This change caches settings lookups on the __dict__ of the LazySettings
+    # object, which is not okay to do in an environment where settings can
+    # change in-process (the entire point of awx's custom settings implementation)
+    # This restores the original behavior that *does not* cache.
+    if self._wrapped is empty:
+        self._setup(name)
+    return getattr(self._wrapped, name)
+
+
+LazySettings.__getattr__ = __getattr_without_cache__

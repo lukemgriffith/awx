@@ -22,6 +22,8 @@ awx/ui/build_test
 awx/ui/client/languages
 awx/ui/templates/ui/index.html
 awx/ui/templates/ui/installing.html
+/tower-license
+/tower-license/**
 
 # Tower setup playbook testing
 setup/test/roles/postgresql
@@ -49,7 +51,7 @@ __pycache__
 /.istanbul.yml
 **/node_modules/**
 /tmp
-npm-debug.log
+**/npm-debug.log*
 
 # UI build flag files
 awx/ui/.deps_built
@@ -65,6 +67,7 @@ pep8.txt
 scratch
 testem.log
 awx/awx_test.sqlite3-journal
+.pytest_cache/
 
 # Mac OS X
 *.DS_Store
@@ -109,7 +112,6 @@ local/
 *.mo
 requirements/vendor
 .i18n_built
-VERSION
 .idea/*
 
 # AWX python libs populated by requirements.txt

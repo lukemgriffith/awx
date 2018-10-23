@@ -1,24 +1,88 @@
 import tempfile
 import json
-
+import yaml
 import pytest
+from itertools import count
 
+from awx.main.utils.encryption import encrypt_value
 from awx.main.tasks import RunJob
 from awx.main.models import (
     Job,
     JobTemplate,
+    JobLaunchConfig,
     WorkflowJobTemplate
 )
+from awx.main.utils.safe_yaml import SafeLoader
+
+ENCRYPTED_SECRET = encrypt_value('secret')
+
+
+class DistinctParametrize(object):
+
+    def __init__(self):
+        self._gen = count(0)
+
+    def __call__(self, value):
+        return str(next(self._gen))
+
+
+@pytest.mark.survey
+class SurveyVariableValidation:
+
+    def test_survey_answers_as_string(self, job_template_factory):
+        objects = job_template_factory(
+            'job-template-with-survey',
+            survey=[{'variable': 'var1', 'type': 'text'}],
+            persisted=False)
+        jt = objects.job_template
+        user_extra_vars = json.dumps({'var1': 'asdf'})
+        accepted, ignored, errors = jt._accept_or_ignore_job_kwargs(extra_vars=user_extra_vars)
+        assert ignored.get('extra_vars', {}) == {}, [str(element) for element in errors]
+        assert 'var1' in accepted['extra_vars']
+
+    def test_job_template_survey_variable_validation(self, job_template_factory):
+        objects = job_template_factory(
+            'survey_variable_validation',
+            organization='org1',
+            inventory='inventory1',
+            credential='cred1',
+            persisted=False,
+        )
+        obj = objects.job_template
+        obj.survey_spec = {
+            "description": "",
+            "spec": [
+                {
+                    "required": True,
+                    "min": 0,
+                    "default": "5",
+                    "max": 1024,
+                    "question_description": "",
+                    "choices": "",
+                    "variable": "a",
+                    "question_name": "Whosyourdaddy",
+                    "type": "text"
+                }
+            ],
+            "name": ""
+        }
+        obj.survey_enabled = True
+        accepted, rejected, errors = obj.accept_or_ignore_variables({"a": 5})
+        assert rejected == {"a": 5}
+        assert accepted == {}
+        assert str(errors[0]) == "Value 5 for 'a' expected to be a string."
 
 
 @pytest.fixture
 def job(mocker):
     ret = mocker.MagicMock(**{
+        'decrypted_extra_vars.return_value': '{\"secret_key\": \"my_password\"}',
         'display_extra_vars.return_value': '{\"secret_key\": \"$encrypted$\"}',
         'extra_vars_dict': {"secret_key": "my_password"},
         'pk': 1, 'job_template.pk': 1, 'job_template.name': '',
         'created_by.pk': 1, 'created_by.username': 'admin',
         'launch_type': 'manual',
+        'awx_meta_vars.return_value': {},
         'inventory.get_script_data.return_value': {}})
     ret.project = mocker.MagicMock(scm_revision='asdf1234')
     return ret
@@ -69,7 +133,9 @@ def test_job_safe_args_redacted_passwords(job):
     run_job = RunJob()
     safe_args = run_job.build_safe_args(job, **kwargs)
     ev_index = safe_args.index('-e') + 1
-    extra_vars = json.loads(safe_args[ev_index])
+    extra_var_file = open(safe_args[ev_index][1:], 'r')
+    extra_vars = yaml.load(extra_var_file, SafeLoader)
+    extra_var_file.close()
     assert extra_vars['secret_key'] == '$encrypted$'
 
 
@@ -78,8 +144,31 @@ def test_job_args_unredacted_passwords(job, tmpdir_factory):
     run_job = RunJob()
     args = run_job.build_args(job, **kwargs)
     ev_index = args.index('-e') + 1
-    extra_vars = json.loads(args[ev_index])
+    extra_var_file = open(args[ev_index][1:], 'r')
+    extra_vars = yaml.load(extra_var_file, SafeLoader)
+    extra_var_file.close()
     assert extra_vars['secret_key'] == 'my_password'
+
+
+def test_launch_config_has_unprompted_vars(survey_spec_factory):
+    jt = JobTemplate(
+        survey_enabled = True,
+        survey_spec = survey_spec_factory(['question1', 'question2'])
+    )
+    unprompted_config = JobLaunchConfig(
+        extra_data = {
+            'question1': 'foobar',
+            'question4': 'foobar'
+        }
+    )
+    assert unprompted_config.has_unprompted(jt)
+    allowed_config = JobLaunchConfig(
+        extra_data = {
+            'question1': 'foobar',
+            'question2': 'foobar'
+        }
+    )
+    assert not allowed_config.has_unprompted(jt)
 
 
 @pytest.mark.survey
@@ -93,6 +182,15 @@ def test_update_kwargs_survey_invalid_default(survey_spec_factory):
     assert 'extra_vars' in defaulted_extra_vars
     # Make sure we did not set the invalid default of 1
     assert json.loads(defaulted_extra_vars['extra_vars'])['var2'] == 2
+
+
+@pytest.mark.survey
+def test_display_survey_spec_encrypts_default(survey_spec_factory):
+    spec = survey_spec_factory('var2')
+    spec['spec'][0]['type'] = 'password'
+    spec['spec'][0]['default'] = 'some-default'
+    jt = JobTemplate(name="test-jt", survey_spec=spec, survey_enabled=True)
+    assert jt.display_survey_spec()['spec'][0]['default'] == '$encrypted$'
 
 
 @pytest.mark.survey
@@ -133,6 +231,46 @@ def test_optional_survey_question_defaults(
         assert json.loads(defaulted_extra_vars['extra_vars'])['c'] == expect_value
     else:
         assert 'c' not in defaulted_extra_vars['extra_vars']
+
+
+@pytest.mark.survey
+@pytest.mark.parametrize("question_type,default,maxlen,kwargs,expected", [
+    ('text', None, 5, {}, {}),
+    ('text', '', 5, {}, {'x': ''}),
+    ('text', 'y', 5, {}, {'x': 'y'}),
+    ('text', 'too-long', 5, {}, {}),
+    ('password', None, 5, {}, {}),
+    ('password', '', 5, {}, {'x': ''}),
+    ('password', ENCRYPTED_SECRET, 5, {}, {}),  # len(secret) == 6, invalid
+    ('password', ENCRYPTED_SECRET, 10, {}, {'x': ENCRYPTED_SECRET}),  # len(secret) < 10, valid
+    ('password', None, 5, {'extra_vars': {'x': '$encrypted$'}}, {}),
+    ('password', '', 5, {'extra_vars': {'x': '$encrypted$'}}, {'x': ''}),
+    ('password', None, 5, {'extra_vars': {'x': 'y'}}, {'x': 'y'}),
+    ('password', '', 5, {'extra_vars': {'x': 'y'}}, {'x': 'y'}),
+    ('password', 'foo', 5, {'extra_vars': {'x': 'y'}}, {'x': 'y'}),
+    ('password', None, 5, {'extra_vars': {'x': ''}}, {'x': ''}),
+    ('password', '', 5, {'extra_vars': {'x': ''}}, {'x': ''}),
+    ('password', 'foo', 5, {'extra_vars': {'x': ''}}, {'x': ''}),
+    ('password', ENCRYPTED_SECRET, 5, {'extra_vars': {'x': '$encrypted$'}}, {}),
+    ('password', ENCRYPTED_SECRET, 10, {'extra_vars': {'x': '$encrypted$'}}, {'x': ENCRYPTED_SECRET}),
+], ids=DistinctParametrize())
+def test_survey_encryption_defaults(survey_spec_factory, question_type, default, maxlen, kwargs, expected):
+    spec = survey_spec_factory([
+        {
+            "required": True,
+            "variable": "x",
+            "min": 0,
+            "max": maxlen,
+            "type": question_type
+        },
+    ])
+    if default is not None:
+        spec['spec'][0]['default'] = default
+    else:
+        spec['spec'][0].pop('default', None)
+    jt = JobTemplate(name="test-jt", survey_spec=spec, survey_enabled=True)
+    extra_vars = json.loads(jt._update_unified_job_kwargs({}, kwargs).get('extra_vars'))
+    assert extra_vars == expected
 
 
 @pytest.mark.survey

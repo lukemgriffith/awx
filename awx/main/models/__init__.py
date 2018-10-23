@@ -3,6 +3,7 @@
 
 # Django
 from django.conf import settings # noqa
+from django.db.models.signals import pre_delete  # noqa
 
 # AWX
 from awx.main.models.base import * # noqa
@@ -12,6 +13,7 @@ from awx.main.models.credential import * # noqa
 from awx.main.models.projects import * # noqa
 from awx.main.models.inventory import * # noqa
 from awx.main.models.jobs import * # noqa
+from awx.main.models.events import * # noqa
 from awx.main.models.ad_hoc_commands import * # noqa
 from awx.main.models.schedules import * # noqa
 from awx.main.models.activity_stream import * # noqa
@@ -23,6 +25,11 @@ from awx.main.models.fact import * # noqa
 from awx.main.models.label import * # noqa
 from awx.main.models.workflow import * # noqa
 from awx.main.models.channels import * # noqa
+from awx.api.versioning import reverse
+from awx.main.models.oauth import * # noqa
+from oauth2_provider.models import Grant, RefreshToken # noqa -- needed django-oauth-toolkit model migrations
+
+
 
 # Monkeypatch Django serializer to ignore django-taggit fields (which break
 # the dumpdata command; see https://github.com/alex/django-taggit/issues/155).
@@ -50,7 +57,18 @@ User.add_to_class('get_queryset', get_user_queryset)
 User.add_to_class('can_access', check_user_access)
 User.add_to_class('can_access_with_errors', check_user_access_with_errors)
 User.add_to_class('accessible_objects', user_accessible_objects)
-User.add_to_class('admin_role', user_admin_role)
+
+
+def cleanup_created_modified_by(sender, **kwargs):
+    # work around a bug in django-polymorphic that doesn't properly
+    # handle cascades for reverse foreign keys on the polymorphic base model
+    # https://github.com/django-polymorphic/django-polymorphic/issues/229
+    for cls in (UnifiedJobTemplate, UnifiedJob):
+        cls.objects.filter(created_by=kwargs['instance']).update(created_by=None)
+        cls.objects.filter(modified_by=kwargs['instance']).update(modified_by=None)
+
+
+pre_delete.connect(cleanup_created_modified_by, sender=User)
 
 
 @property
@@ -112,6 +130,23 @@ def user_is_in_enterprise_category(user, category):
 
 User.add_to_class('is_in_enterprise_category', user_is_in_enterprise_category)
 
+
+
+
+def o_auth2_application_get_absolute_url(self, request=None):
+    return reverse('api:o_auth2_application_detail', kwargs={'pk': self.pk}, request=request)
+
+
+OAuth2Application.add_to_class('get_absolute_url', o_auth2_application_get_absolute_url)
+
+
+def o_auth2_token_get_absolute_url(self, request=None):
+    return reverse('api:o_auth2_token_detail', kwargs={'pk': self.pk}, request=request)
+
+
+OAuth2AccessToken.add_to_class('get_absolute_url', o_auth2_token_get_absolute_url)
+
+
 # Import signal handlers only after models have been defined.
 import awx.main.signals # noqa
 
@@ -142,20 +177,14 @@ activity_stream_registrar.connect(User)
 activity_stream_registrar.connect(WorkflowJobTemplate)
 activity_stream_registrar.connect(WorkflowJobTemplateNode)
 activity_stream_registrar.connect(WorkflowJob)
+activity_stream_registrar.connect(OAuth2Application)
+activity_stream_registrar.connect(OAuth2AccessToken)
 
 # prevent API filtering on certain Django-supplied sensitive fields
 prevent_search(User._meta.get_field('password'))
+prevent_search(OAuth2AccessToken._meta.get_field('token'))
+prevent_search(RefreshToken._meta.get_field('token'))
+prevent_search(OAuth2Application._meta.get_field('client_secret'))
+prevent_search(OAuth2Application._meta.get_field('client_id'))
+prevent_search(Grant._meta.get_field('code'))
 
-
-# Always, always, always defer result_stdout_text for polymorphic UnifiedJob rows
-# TODO: remove this defer in 3.3 when we implement https://github.com/ansible/ansible-tower/issues/5436
-def defer_stdout(f):
-    def _wrapped(*args, **kwargs):
-        objs = f(*args, **kwargs)
-        objs.query.deferred_loading[0].add('result_stdout_text')
-        return objs
-    return _wrapped
-
-
-for cls in UnifiedJob.__subclasses__():
-    cls.base_objects.filter = defer_stdout(cls.base_objects.filter)

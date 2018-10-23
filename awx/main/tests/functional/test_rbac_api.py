@@ -38,7 +38,7 @@ def test_get_roles_list_user(organization, inventory, team, get, user):
     'Users can see all roles they have access to, but not all roles'
     this_user = user('user-test_get_roles_list_user')
     organization.member_role.members.add(this_user)
-    custom_role = Role.objects.create(name='custom_role-test_get_roles_list_user')
+    custom_role = Role.objects.create(role_field='custom_role-test_get_roles_list_user')
     organization.member_role.children.add(custom_role)
 
     url = reverse('api:role_list')
@@ -56,7 +56,6 @@ def test_get_roles_list_user(organization, inventory, team, get, user):
     assert Role.singleton(ROLE_SINGLETON_SYSTEM_ADMINISTRATOR).id in role_hash
     assert organization.admin_role.id in role_hash
     assert organization.member_role.id in role_hash
-    assert this_user.admin_role.id in role_hash
     assert custom_role.id in role_hash
 
     assert inventory.admin_role.id not in role_hash
@@ -99,12 +98,12 @@ def test_cant_create_role(post, admin):
 
 
 @pytest.mark.django_db
-def test_cant_delete_role(delete, admin):
+def test_cant_delete_role(delete, admin, inventory):
     "Ensure we can't delete roles through the api"
     # Some day we might want to do this, but until that is speced out, lets
     # ensure we don't slip up and allow this implicitly through some helper or
     # another
-    response = delete(reverse('api:role_detail', kwargs={'pk': admin.admin_role.id}), admin)
+    response = delete(reverse('api:role_detail', kwargs={'pk': inventory.admin_role.id}), admin)
     assert response.status_code == 405
 
 
@@ -128,7 +127,7 @@ def test_user_view_other_user_roles(organization, inventory, team, get, alice, b
     organization.member_role.members.add(alice)
     organization.admin_role.members.add(bob)
     organization.member_role.members.add(bob)
-    custom_role = Role.objects.create(name='custom_role-test_user_view_admin_roles_list')
+    custom_role = Role.objects.create(role_field='custom_role-test_user_view_admin_roles_list')
     organization.member_role.children.add(custom_role)
     team.member_role.members.add(bob)
 

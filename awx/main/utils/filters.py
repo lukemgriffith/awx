@@ -1,5 +1,5 @@
 import re
-import sys
+from functools import reduce
 from pyparsing import (
     infixNotation,
     opAssoc,
@@ -8,18 +8,111 @@ from pyparsing import (
     CharsNotIn,
     ParseException,
 )
+from logging import Filter, _levelNames
 
-import django
+import six
+
+from django.apps import apps
+from django.db import models
+from django.conf import settings
 
 from awx.main.utils.common import get_search_fields
 
-__all__ = ['SmartFilter']
+__all__ = ['SmartFilter', 'ExternalLoggerEnabled']
 
-unicode_spaces = [unichr(c) for c in xrange(sys.maxunicode) if unichr(c).isspace()]
-unicode_spaces_other = unicode_spaces + [u'(', u')', u'=', u'"']
+
+class FieldFromSettings(object):
+    """
+    Field interface - defaults to getting value from setting
+    if otherwise set, provided value will take precedence
+        over value in settings
+    """
+
+    def __init__(self, setting_name):
+        self.setting_name = setting_name
+
+    def __get__(self, instance, type=None):
+        if self.setting_name in getattr(instance, 'settings_override', {}):
+            return instance.settings_override[self.setting_name]
+        return getattr(settings, self.setting_name, None)
+
+    def __set__(self, instance, value):
+        if value is None:
+            if hasattr(instance, 'settings_override'):
+                instance.settings_override.pop('instance', None)
+        else:
+            if not hasattr(instance, 'settings_override'):
+                instance.settings_override = {}
+            instance.settings_override[self.setting_name] = value
+
+
+class ExternalLoggerEnabled(Filter):
+
+    # Prevents recursive logging loops from swamping the server
+    LOGGER_BLACKLIST = (
+        # loggers that may be called in process of emitting a log
+        'awx.main.utils.handlers',
+        'awx.main.utils.formatters',
+        'awx.main.utils.filters',
+        'awx.main.utils.encryption',
+        'awx.main.utils.log',
+        # loggers that may be called getting logging settings
+        'awx.conf'
+    )
+
+    lvl = FieldFromSettings('LOG_AGGREGATOR_LEVEL')
+    enabled_loggers = FieldFromSettings('LOG_AGGREGATOR_LOGGERS')
+    enabled_flag = FieldFromSettings('LOG_AGGREGATOR_ENABLED')
+
+    def __init__(self, **kwargs):
+        super(ExternalLoggerEnabled, self).__init__()
+        for field_name, field_value in kwargs.items():
+            if not isinstance(ExternalLoggerEnabled.__dict__.get(field_name, None), FieldFromSettings):
+                raise Exception('%s is not a valid kwarg' % field_name)
+            if field_value is None:
+                continue
+            setattr(self, field_name, field_value)
+
+    def filter(self, record):
+        """
+        Uses the database settings to determine if the current
+        external log configuration says that this particular record
+        should be sent to the external log aggregator
+
+        False - should not be logged
+        True - should be logged
+        """
+        # Logger exceptions
+        for logger_name in self.LOGGER_BLACKLIST:
+            if record.name.startswith(logger_name):
+                return False
+        # General enablement
+        if not self.enabled_flag:
+            return False
+
+        # Level enablement
+        if record.levelno < _levelNames[self.lvl]:
+            # logging._levelNames -> logging._nameToLevel in python 3
+            return False
+
+        # Logger type enablement
+        loggers = self.enabled_loggers
+        if not loggers:
+            return False
+        if record.name.startswith('awx.analytics'):
+            base_path, headline_name = record.name.rsplit('.', 1)
+            return bool(headline_name in loggers)
+        else:
+            if '.' in record.name:
+                base_name, trailing_path = record.name.split('.', 1)
+            else:
+                base_name = record.name
+            return bool(base_name in loggers)
 
 
 def string_to_type(t):
+    if t == u'null':
+        return None
     if t == u'true':
         return True
     elif t == u'false':
@@ -35,7 +128,7 @@ def string_to_type(t):
 
 
 def get_model(name):
-    return django.apps.apps.get_model('main', name)
+    return apps.get_model('main', name)
 
 
 class SmartFilter(object):
@@ -51,19 +144,23 @@ class SmartFilter(object):
             search_kwargs = self._expand_search(k, v)
             if search_kwargs:
                 kwargs.update(search_kwargs)
-                q = reduce(lambda x, y: x | y, [django.db.models.Q(**{u'%s__contains' % _k:_v}) for _k, _v in kwargs.items()])
+                q = reduce(lambda x, y: x | y, [models.Q(**{u'%s__icontains' % _k:_v}) for _k, _v in kwargs.items()])
                 self.result = Host.objects.filter(q)
             else:
+                # detect loops and restrict access to sensitive fields
+                # this import is intentional here to avoid a circular import
+                from awx.api.filters import FieldLookupBackend
+                FieldLookupBackend().get_field_from_lookup(Host, k)
                 kwargs[k] = v
                 self.result = Host.objects.filter(**kwargs)
 
         def strip_quotes_traditional_logic(self, v):
-            if type(v) is unicode and v.startswith('"') and v.endswith('"'):
+            if type(v) is six.text_type and v.startswith('"') and v.endswith('"'):
                 return v[1:-1]
             return v
 
         def strip_quotes_json_logic(self, v):
-            if type(v) is unicode and v.startswith('"') and v.endswith('"') and v != u'"null"':
+            if type(v) is six.text_type and v.startswith('"') and v.endswith('"') and v != u'"null"':
                 return v[1:-1]
             return v
 
@@ -142,7 +239,7 @@ class SmartFilter(object):
             # value
             # ="something"
             if t_len > (v_offset + 2) and t[v_offset] == "\"" and t[v_offset + 2] == "\"":
-                v = u'"' + unicode(t[v_offset + 1]) + u'"'
+                v = u'"' + six.text_type(t[v_offset + 1]) + u'"'
                 #v = t[v_offset + 1]
             # empty ""
             elif t_len > (v_offset + 1):
@@ -211,8 +308,10 @@ class SmartFilter(object):
         * handle key with __ in it
         '''
         filter_string_raw = filter_string
-        filter_string = unicode(filter_string)
+        filter_string = six.text_type(filter_string)
 
+        unicode_spaces = list(set(six.text_type(c) for c in filter_string if c.isspace()))
+        unicode_spaces_other = unicode_spaces + [u'(', u')', u'=', u'"']
         atom = CharsNotIn(unicode_spaces_other)
         atom_inside_quotes = CharsNotIn(u'"')
         atom_quoted = Literal('"') + Optional(atom_inside_quotes) + Literal('"')

@@ -5,7 +5,6 @@ import mock
 # AWX
 from awx.api.serializers import (
     WorkflowJobTemplateSerializer,
-    WorkflowNodeBaseSerializer,
     WorkflowJobTemplateNodeSerializer,
     WorkflowJobNodeSerializer,
 )
@@ -14,6 +13,10 @@ from awx.main.models import (
     WorkflowJobTemplateNode,
     WorkflowJob,
     WorkflowJobNode,
+    WorkflowJobTemplate,
+    Project,
+    Inventory,
+    JobTemplate
 )
 
 
@@ -54,7 +57,7 @@ class TestWorkflowNodeBaseSerializerGetRelated():
         return WorkflowJobTemplateNode(pk=1)
 
     def test_workflow_unified_job_template_present(self, get_related_mock_and_run, workflow_job_template_node_related):
-        related = get_related_mock_and_run(WorkflowNodeBaseSerializer, workflow_job_template_node_related)
+        related = get_related_mock_and_run(WorkflowJobTemplateNodeSerializer, workflow_job_template_node_related)
         assert 'unified_job_template' in related
         assert related['unified_job_template'] == '/api/v2/%s/%d/' % ('job_templates', workflow_job_template_node_related.unified_job_template.pk)
 
@@ -63,7 +66,7 @@ class TestWorkflowNodeBaseSerializerGetRelated():
         assert 'unified_job_template' not in related
 
 
-@mock.patch('awx.api.serializers.WorkflowNodeBaseSerializer.get_related', lambda x,y: {})
+@mock.patch('awx.api.serializers.BaseSerializer.get_related', lambda x,y: {})
 class TestWorkflowJobTemplateNodeSerializerGetRelated():
     @pytest.fixture
     def workflow_job_template_node(self):
@@ -125,27 +128,113 @@ class TestWorkflowJobTemplateNodeSerializerCharPrompts():
         serializer = WorkflowJobTemplateNodeSerializer()
         node = WorkflowJobTemplateNode(pk=1)
         node.char_prompts = {'limit': 'webservers'}
-        serializer.instance = node
+
         view = FakeView(node)
         view.request = FakeRequest()
         view.request.method = "PATCH"
-        serializer.context = {'view': view}
+
+        serializer = WorkflowJobTemplateNodeSerializer()
+        serializer = WorkflowJobTemplateNodeSerializer(context={'view':view})
+        serializer.instance = node
+
         return serializer
 
     def test_change_single_field(self, WFJT_serializer):
         "Test that a single prompt field can be changed without affecting other fields"
         internal_value = WFJT_serializer.to_internal_value({'job_type': 'check'})
-        assert internal_value['char_prompts']['job_type'] == 'check'
-        assert internal_value['char_prompts']['limit'] == 'webservers'
+        assert internal_value['job_type'] == 'check'
+        WFJT_serializer.instance.job_type = 'check'
+        assert WFJT_serializer.instance.limit == 'webservers'
 
     def test_null_single_field(self, WFJT_serializer):
         "Test that a single prompt field can be removed without affecting other fields"
         internal_value = WFJT_serializer.to_internal_value({'job_type': None})
-        assert 'job_type' not in internal_value['char_prompts']
-        assert internal_value['char_prompts']['limit'] == 'webservers'
+        assert internal_value['job_type'] is None
+        WFJT_serializer.instance.job_type = None
+        assert WFJT_serializer.instance.limit == 'webservers'
 
 
-@mock.patch('awx.api.serializers.WorkflowNodeBaseSerializer.get_related', lambda x,y: {})
+@mock.patch('awx.api.serializers.BaseSerializer.validate', lambda self, attrs: attrs)
+class TestWorkflowJobTemplateNodeSerializerSurveyPasswords():
+
+    @pytest.fixture
+    def jt(self, survey_spec_factory):
+        return JobTemplate(
+            name='fake-jt',
+            survey_enabled=True,
+            survey_spec=survey_spec_factory(variables='var1', default_type='password'),
+            project=Project('fake-proj'), project_id=42,
+            inventory=Inventory('fake-inv'), inventory_id=42
+        )
+
+    def test_set_survey_passwords_create(self, jt):
+        serializer = WorkflowJobTemplateNodeSerializer()
+        wfjt = WorkflowJobTemplate(name='fake-wfjt')
+        attrs = serializer.validate({
+            'unified_job_template': jt,
+            'workflow_job_template': wfjt,
+            'extra_data': {'var1': 'secret_answer'}
+        })
+        assert 'survey_passwords' in attrs
+        assert 'var1' in attrs['survey_passwords']
+        assert attrs['extra_data']['var1'].startswith('$encrypted$')
+        assert len(attrs['extra_data']['var1']) > len('$encrypted$')
+
+    def test_set_survey_passwords_modify(self, jt):
+        serializer = WorkflowJobTemplateNodeSerializer()
+        wfjt = WorkflowJobTemplate(name='fake-wfjt')
+        serializer.instance = WorkflowJobTemplateNode(
+            workflow_job_template=wfjt,
+            unified_job_template=jt
+        )
+        attrs = serializer.validate({
+            'unified_job_template': jt,
+            'workflow_job_template': wfjt,
+            'extra_data': {'var1': 'secret_answer'}
+        })
+        assert 'survey_passwords' in attrs
+        assert 'var1' in attrs['survey_passwords']
+        assert attrs['extra_data']['var1'].startswith('$encrypted$')
+        assert len(attrs['extra_data']['var1']) > len('$encrypted$')
+
+    def test_use_db_answer(self, jt, mocker):
+        serializer = WorkflowJobTemplateNodeSerializer()
+        wfjt = WorkflowJobTemplate(name='fake-wfjt')
+        serializer.instance = WorkflowJobTemplateNode(
+            workflow_job_template=wfjt,
+            unified_job_template=jt,
+            extra_data={'var1': '$encrypted$foooooo'}
+        )
+        with mocker.patch('awx.main.models.mixins.decrypt_value', return_value='foo'):
+            attrs = serializer.validate({
+                'unified_job_template': jt,
+                'workflow_job_template': wfjt,
+                'extra_data': {'var1': '$encrypted$'}
+            })
+        assert 'survey_passwords' in attrs
+        assert 'var1' in attrs['survey_passwords']
+        assert attrs['extra_data']['var1'] == '$encrypted$foooooo'
+
+    def test_accept_password_default(self, jt, mocker):
+        '''
+        If user provides "$encrypted$" without a corresponding DB value for the
+        node, but survey question has a default, then variables are accepted
+        with that particular var omitted so on launch time the default takes effect
+        '''
+        serializer = WorkflowJobTemplateNodeSerializer()
+        wfjt = WorkflowJobTemplate(name='fake-wfjt')
+        jt.survey_spec['spec'][0]['default'] = '$encrypted$bar'
+        attrs = serializer.validate({
+            'unified_job_template': jt,
+            'workflow_job_template': wfjt,
+            'extra_data': {'var1': '$encrypted$'}
+        })
+        assert 'survey_passwords' in attrs
+        assert attrs['survey_passwords'] == {}
+        assert attrs['extra_data'] == {}
+
+
+@mock.patch('awx.api.serializers.WorkflowJobTemplateNodeSerializer.get_related', lambda x,y: {})
 class TestWorkflowJobNodeSerializerGetRelated():
     @pytest.fixture
     def workflow_job_node(self):

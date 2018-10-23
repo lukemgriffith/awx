@@ -8,12 +8,11 @@ import adhoc from './adhoc/main';
 import group from './related/groups/main';
 import sources from './related/sources/main';
 import relatedHost from './related/hosts/main';
-import inventoryCompletedJobs from './related/completed-jobs/main';
 import inventoryList from './list/main';
 import InventoryList from './inventory.list';
 import adHocRoute from './adhoc/adhoc.route';
 import insights from './insights/main';
-import completedJobsRoute from './related/completed-jobs/completed-jobs.route';
+import completedJobsRoute from '~features/jobs/routes/inventoryCompletedJobs.route.js';
 import inventorySourceEditRoute from './related/sources/edit/sources-edit.route';
 import inventorySourceEditNotificationsRoute from './related/sources/edit/sources-notifications.route';
 import inventorySourceAddRoute from './related/sources/add/sources-add.route';
@@ -46,6 +45,7 @@ import hostNestedGroupsAssociateRoute from './related/hosts/related/nested-group
 import groupNestedGroupsAssociateRoute from './related/groups/related/nested-groups/group-nested-groups-associate.route';
 import nestedHostsAssociateRoute from './related/groups/related/nested-hosts/group-nested-hosts-associate.route';
 import nestedHostsAddRoute from './related/groups/related/nested-hosts/group-nested-hosts-add.route';
+import hostCompletedJobsRoute from '~features/jobs/routes/hostCompletedJobs.route.js';
 
 export default
 angular.module('inventory', [
@@ -53,7 +53,6 @@ angular.module('inventory', [
         group.name,
         sources.name,
         relatedHost.name,
-        inventoryCompletedJobs.name,
         inventoryList.name,
         insights.name,
         SmartInventory.name,
@@ -254,7 +253,6 @@ angular.module('inventory', [
 
                 let addSourceCredential = _.cloneDeep(inventorySourcesCredentialRoute);
                 addSourceCredential.name = 'inventories.edit.inventory_sources.add.credential';
-                addSourceCredential.url = '/credential';
 
                 let addSourceInventoryScript = _.cloneDeep(inventorySourcesInventoryScriptRoute);
                 addSourceInventoryScript.name = 'inventories.edit.inventory_sources.add.inventory_script';
@@ -262,7 +260,6 @@ angular.module('inventory', [
 
                 let editSourceCredential = _.cloneDeep(inventorySourcesCredentialRoute);
                 editSourceCredential.name = 'inventories.edit.inventory_sources.edit.credential';
-                editSourceCredential.url = '/credential';
 
                 let addSourceProject = _.cloneDeep(inventorySourcesProjectRoute);
                 addSourceProject.name = 'inventories.edit.inventory_sources.add.project';
@@ -293,6 +290,9 @@ angular.module('inventory', [
 
                 let smartInventoryAdhocCredential = _.cloneDeep(adhocCredentialRoute);
                 smartInventoryAdhocCredential.name = 'inventories.editSmartInventory.adhoc.credential';
+
+                let relatedHostCompletedJobs = _.cloneDeep(hostCompletedJobsRoute);
+                relatedHostCompletedJobs.name = 'inventories.edit.hosts.edit.completed_jobs';
 
                 return Promise.all([
                     standardInventoryAdd,
@@ -341,7 +341,8 @@ angular.module('inventory', [
                             stateExtender.buildDefinition(hostNestedGroupsAssociateRoute),
                             stateExtender.buildDefinition(nestedHostsAssociateRoute),
                             stateExtender.buildDefinition(nestedGroupsAdd),
-                            stateExtender.buildDefinition(nestedHostsAddRoute)
+                            stateExtender.buildDefinition(nestedHostsAddRoute),
+                            stateExtender.buildDefinition(relatedHostCompletedJobs)
                         ])
                     };
                 });

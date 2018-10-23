@@ -2,6 +2,8 @@ import mock
 import pytest
 import json
 
+import six
+
 from awx.api.versioning import reverse
 from awx.main.utils import timestamp_apiformat
 from django.utils import timezone
@@ -39,7 +41,7 @@ def check_system_tracking_feature_forbidden(response):
     assert 'Your license does not permit use of system tracking.' == response.data['detail']
 
 
-@mock.patch('awx.api.views.feature_enabled', new=mock_feature_disabled)
+@mock.patch('awx.api.views.mixin.feature_enabled', new=mock_feature_disabled)
 @pytest.mark.django_db
 @pytest.mark.license_feature
 def test_system_tracking_license_get(hosts, get, user):
@@ -50,7 +52,7 @@ def test_system_tracking_license_get(hosts, get, user):
     check_system_tracking_feature_forbidden(response)
 
 
-@mock.patch('awx.api.views.feature_enabled', new=mock_feature_disabled)
+@mock.patch('awx.api.views.mixin.feature_enabled', new=mock_feature_disabled)
 @pytest.mark.django_db
 @pytest.mark.license_feature
 def test_system_tracking_license_options(hosts, options, user):
@@ -105,7 +107,7 @@ def test_content(hosts, fact_scans, get, user, fact_ansible_json, monkeypatch_js
 
     assert fact_known.host_id == response.data['host']
     # TODO: Just make response.data['facts'] when we're only dealing with postgres, or if jsonfields ever fixes this bug
-    assert fact_ansible_json == (json.loads(response.data['facts']) if isinstance(response.data['facts'], unicode) else response.data['facts'])
+    assert fact_ansible_json == (json.loads(response.data['facts']) if isinstance(response.data['facts'], six.text_type) else response.data['facts'])
     assert timestamp_apiformat(fact_known.timestamp) == response.data['timestamp']
     assert fact_known.module == response.data['module']
 
@@ -117,7 +119,7 @@ def _test_search_by_module(hosts, fact_scans, get, user, fact_json, module_name)
     (fact_known, response) = setup_common(hosts, fact_scans, get, user, module_name=module_name, get_params=params)
 
     # TODO: Just make response.data['facts'] when we're only dealing with postgres, or if jsonfields ever fixes this bug
-    assert fact_json == (json.loads(response.data['facts']) if isinstance(response.data['facts'], unicode) else response.data['facts'])
+    assert fact_json == (json.loads(response.data['facts']) if isinstance(response.data['facts'], six.text_type) else response.data['facts'])
     assert timestamp_apiformat(fact_known.timestamp) == response.data['timestamp']
     assert module_name == response.data['module']
 

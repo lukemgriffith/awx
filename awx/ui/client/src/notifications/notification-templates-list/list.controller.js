@@ -7,12 +7,12 @@
  export default ['$scope', 'Wait', 'NotificationTemplatesList',
      'GetBasePath', 'Rest', 'ProcessErrors', 'Prompt', '$state',
      'ngToast', '$filter', 'Dataset', 'rbacUiControlService',
-     'i18n',
+     'i18n', 'NotificationTemplate', 'AppStrings',
      function(
          $scope, Wait, NotificationTemplatesList,
          GetBasePath, Rest, ProcessErrors, Prompt, $state,
          ngToast, $filter, Dataset, rbacUiControlService,
-         i18n) {
+         i18n, NotificationTemplate, AppStrings) {
 
          var defaultUrl = GetBasePath('notification_templates'),
              list = NotificationTemplatesList;
@@ -31,7 +31,7 @@
              $scope.list = list;
              $scope[`${list.iterator}_dataset`] = Dataset.data;
              $scope[list.name] = $scope[`${list.iterator}_dataset`].results;
-         }
+        }
 
              $scope.$on(`notification_template_options`, function(event, data){
                  $scope.options = data.data.actions.GET;
@@ -88,6 +88,33 @@
              notification_template.template_status_html = html;
          }
 
+        $scope.copyNotification = notificationTemplate => {
+            Wait('start');
+            new NotificationTemplate('get', notificationTemplate.id)
+                .then(model => model.copy())
+                .then((copiedNotification) => {
+                    ngToast.success({
+                        content: `
+                            <div class="Toast-wrapper">
+                                <div class="Toast-icon">
+                                    <i class="fa fa-check-circle Toast-successIcon"></i>
+                                </div>
+                                <div>
+                                    ${AppStrings.get('SUCCESSFUL_CREATION', copiedNotification.name)}
+                                </div>
+                            </div>`,
+                        dismissButton: false,
+                        dismissOnTimeout: true
+                    });
+                    $state.go('.', null, { reload: true });
+                })
+                .catch(({ data, status }) => {
+                    const params = { hdr: 'Error!', msg: `Call to copy failed. Return status: ${status}` };
+                    ProcessErrors($scope, data, status, null, params);
+                })
+                .finally(() => Wait('stop'));
+        };
+
          $scope.testNotification = function() {
              var name = $filter('sanitize')(this.notification_template.name),
                  pending_retries = 10;
@@ -116,7 +143,7 @@
 
              function retrieveStatus(id) {
                  setTimeout(function() {
-                     var url = GetBasePath('notifications') + id;
+                     let url = GetBasePath('notifications') + id;
                      Rest.setUrl(url);
                      Rest.get()
                          .then(function(res) {
@@ -141,10 +168,17 @@
                                  });
                              }
 
-                         });
+                         })
+                         .catch(({data, status}) => {
+                            ProcessErrors($scope, data, status, null, {
+                                hdr: 'Error!',
+                                msg: 'Failed to get ' + url + '. GET status: ' + status
+                            });
+                        });
                  }, 5000);
              }
          };
+
 
          $scope.addNotification = function() {
              $state.go('notifications.add');
@@ -164,11 +198,11 @@
                  var url = defaultUrl + id + '/';
                  Rest.setUrl(url);
                  Rest.destroy()
-                     .success(function() {
+                     .then(() => {
 
                          let reloadListStateParams = null;
 
-                         if($scope.notification_templates.length === 1 && $state.params.notification_template_search && !_.isEmpty($state.params.notification_template_search.page) && $state.params.notification_template_search.page !== '1') {
+                         if($scope.notification_templates.length === 1 && $state.params.notification_template_search && _.has($state, 'params.notification_template_search.page') && $state.params.notification_template_search.page !== '1') {
                              reloadListStateParams = _.cloneDeep($state.params);
                              reloadListStateParams.notification_template_search.page = (parseInt(reloadListStateParams.notification_template_search.page)-1).toString();
                          }
@@ -180,17 +214,18 @@
                          }
                          Wait('stop');
                      })
-                     .error(function(data, status) {
+                     .catch(({data, status}) => {
                          ProcessErrors($scope, data, status, null, {
                              hdr: 'Error!',
                              msg: 'Call to ' + url + ' failed. DELETE returned status: ' + status
                          });
                      });
              };
-             var bodyHtml = '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete the notification template below?') + '</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(name) + '</div>';
+
              Prompt({
                  hdr: i18n._('Delete'),
-                 body: bodyHtml,
+                 resourceName: $filter('sanitize')(name),
+                 body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete this notification template?') + '</div>',
                  action: action,
                  actionText: i18n._('DELETE')
              });

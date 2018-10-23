@@ -6,9 +6,12 @@
 
 export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', 'GetBasePath',
         'Wait', '$state', '$filter', 'rbacUiControlService', 'Dataset', 'credentialType', 'i18n',
+        'CredentialModel', 'CredentialsStrings', 'ngToast',
     function($scope, Rest, CredentialList, Prompt,
     ProcessErrors, GetBasePath, Wait, $state, $filter, rbacUiControlService, Dataset,
-    credentialType, i18n) {
+    credentialType, i18n, Credential, CredentialsStrings, ngToast) {
+
+        const credential = new Credential();
 
         var list = CredentialList,
             defaultUrl = GetBasePath('credentials');
@@ -45,9 +48,25 @@ export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', '
                 return;
             }
 
-            $scope[list.name].forEach(credential => {
-                credential.kind = credentialType.match('id', credential.credential_type).name;
-            });
+            const params = $scope[list.name]
+                .reduce((accumulator, credential) => {
+                    accumulator.push(credential.credential_type);
+
+                    return accumulator;
+                }, [])
+                .filter((id, i, array) => array.indexOf(id) === i)
+                .map(id => `or__id=${id}`);
+
+            credentialType.search(params)
+                .then(found => {
+                    if (!found) {
+                      return;
+                    }
+
+                    $scope[list.name].forEach(credential => {
+                        credential.kind = credentialType.match('id', credential.credential_type).name;
+                    });
+                });
         }
 
         // iterate over the list and add fields like type label, after the
@@ -70,6 +89,33 @@ export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', '
             }
         }
 
+        $scope.copyCredential = credential => {
+            Wait('start');
+            new Credential('get', credential.id)
+                .then(model => model.copy())
+                .then((copiedCred) => {
+                    ngToast.success({
+                        content: `
+                            <div class="Toast-wrapper">
+                                <div class="Toast-icon">
+                                    <i class="fa fa-check-circle Toast-successIcon"></i>
+                                </div>
+                                <div>
+                                    ${CredentialsStrings.get('SUCCESSFUL_CREATION', copiedCred.name)}
+                                </div>
+                            </div>`,
+                        dismissButton: false,
+                        dismissOnTimeout: true
+                    });
+                    $state.go('.', null, { reload: true });
+                })
+                .catch(({ data, status }) => {
+                    const params = { hdr: 'Error!', msg: `Call to copy failed. Return status: ${status}` };
+                    ProcessErrors($scope, data, status, null, params);
+                })
+                .finally(() => Wait('stop'));
+        };
+
         $scope.addCredential = function() {
             $state.go('credentials.add');
         };
@@ -83,13 +129,12 @@ export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', '
                 $('#prompt-modal').modal('hide');
                 Wait('start');
                 var url = defaultUrl + id + '/';
-                Rest.setUrl(url);
-                Rest.destroy()
-                    .success(function() {
+                credential.request('delete', id)
+                    .then(() => {
 
                         let reloadListStateParams = null;
 
-                        if($scope.credentials.length === 1 && $state.params.credential_search && !_.isEmpty($state.params.credential_search.page) && $state.params.credential_search.page !== '1') {
+                        if($scope.credentials.length === 1 && $state.params.credential_search && _.has($state, 'params.credential_search.page') && $state.params.credential_search.page !== '1') {
                             reloadListStateParams = _.cloneDeep($state.params);
                             reloadListStateParams.credential_search.page = (parseInt(reloadListStateParams.credential_search.page)-1).toString();
                         }
@@ -101,7 +146,7 @@ export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', '
                         }
                         Wait('stop');
                     })
-                    .error(function(data, status) {
+                    .catch(({data, status}) => {
                         ProcessErrors($scope, data, status, null, {
                             hdr: 'Error!',
                             msg: 'Call to ' + url + ' failed. DELETE returned status: ' + status
@@ -109,12 +154,32 @@ export default ['$scope', 'Rest', 'CredentialList', 'Prompt', 'ProcessErrors', '
                     });
             };
 
-            Prompt({
-                hdr: i18n._('Delete'),
-                body: '<div class="Prompt-bodyQuery">' + i18n._('Are you sure you want to delete the credential below?') + '</div><div class="Prompt-bodyTarget">' + $filter('sanitize')(name) + '</div>',
-                action: action,
-                actionText: i18n._('DELETE')
-            });
+            credential.getDependentResourceCounts(id)
+                .then((counts) => {
+                    const invalidateRelatedLines = [];
+                    let deleteModalBody = `<div class="Prompt-bodyQuery">${CredentialsStrings.get('deleteResource.CONFIRM', 'credential')}</div>`;
+
+                    counts.forEach(countObj => {
+                        if(countObj.count && countObj.count > 0) {
+                            invalidateRelatedLines.push(`<div><span class="Prompt-warningResourceTitle">${countObj.label}</span><span class="badge List-titleBadge">${countObj.count}</span></div>`);
+                        }
+                    });
+
+                    if (invalidateRelatedLines && invalidateRelatedLines.length > 0) {
+                        deleteModalBody = `<div class="Prompt-bodyQuery">${CredentialsStrings.get('deleteResource.USED_BY', 'credential')} ${CredentialsStrings.get('deleteResource.CONFIRM', 'credential')}</div>`;
+                        invalidateRelatedLines.forEach(invalidateRelatedLine => {
+                            deleteModalBody += invalidateRelatedLine;
+                        });
+                    }
+
+                    Prompt({
+                        hdr: i18n._('Delete'),
+                        resourceName: $filter('sanitize')(name),
+                        body: deleteModalBody,
+                        action: action,
+                        actionText: 'DELETE'
+                    });
+                });
         };
     }
 ];

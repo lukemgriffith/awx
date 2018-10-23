@@ -17,7 +17,7 @@ logger = logging.getLogger('awx.api.permissions')
 
 __all__ = ['ModelAccessPermission', 'JobTemplateCallbackPermission',
            'TaskPermission', 'ProjectUpdatePermission', 'InventoryInventorySourcesUpdatePermission',
-           'UserPermission', 'IsSuperUser']
+           'UserPermission', 'IsSuperUser', 'InstanceGroupTowerPermission',]
 
 
 class ModelAccessPermission(permissions.BasePermission):
@@ -103,7 +103,8 @@ class ModelAccessPermission(permissions.BasePermission):
             return False
 
         # Always allow superusers
-        if getattr(view, 'always_allow_superuser', True) and request.user.is_superuser:
+        if getattr(view, 'always_allow_superuser', True) and request.user.is_superuser \
+                and not hasattr(request.user, 'oauth_scopes'):
             return True
 
         # Check if view supports the request method before checking permission
@@ -226,3 +227,11 @@ class IsSuperUser(permissions.BasePermission):
 
     def has_permission(self, request, view):
         return request.user and request.user.is_superuser
+
+
+class InstanceGroupTowerPermission(ModelAccessPermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method == 'DELETE' and obj.name == "tower":
+            return False
+        return super(InstanceGroupTowerPermission, self).has_object_permission(request, view, obj)
+

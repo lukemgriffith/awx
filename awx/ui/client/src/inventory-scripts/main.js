@@ -10,6 +10,7 @@ import inventoryScriptsEdit from './edit/main';
 import list from './inventory-scripts.list';
 import form from './inventory-scripts.form';
 import { N_ } from '../i18n';
+import InventoryScriptsStrings from './inventory-scripts.strings';
 
 export default
 angular.module('inventoryScripts', [
@@ -19,14 +20,13 @@ angular.module('inventoryScripts', [
     ])
     .factory('InventoryScriptsList', list)
     .factory('InventoryScriptsForm', form)
+    .service('InventoryScriptsStrings', InventoryScriptsStrings)
     .config(['$stateProvider', 'stateDefinitionsProvider',
         function($stateProvider, stateDefinitionsProvider) {
             let stateDefinitions = stateDefinitionsProvider.$get();
 
-            $stateProvider.state({
-                name: 'inventoryScripts.**',
-                url: '/inventory_script',
-                lazyLoad: () => stateDefinitions.generateTree({
+            function generateStateTree() {
+                let inventoryScriptTree = stateDefinitions.generateTree({
                     parent: 'inventoryScripts',
                     modes: ['add', 'edit'],
                     list: 'InventoryScriptsList',
@@ -64,7 +64,23 @@ angular.module('inventoryScripts', [
                     ncyBreadcrumb: {
                         label: N_('INVENTORY SCRIPTS')
                     }
-                })
-            });
+                });
+
+                return Promise.all([
+                    inventoryScriptTree
+                ]).then((generated) => {
+                    return {
+                        states: _.reduce(generated, (result, definition) => {
+                            return result.concat(definition.states);
+                        }, [])
+                    };
+                });
+            }
+            let stateTree = {
+                name: 'inventoryScripts.**',
+                url: '/inventory_scripts',
+                lazyLoad: () => generateStateTree()
+            };
+            $stateProvider.state(stateTree);
         }
     ]);

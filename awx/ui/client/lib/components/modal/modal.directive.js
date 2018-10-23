@@ -12,22 +12,21 @@ function atModalLink (scope, el, attrs, controllers) {
     });
 }
 
-function AtModalController (eventService, strings) {
+function AtModalController ($timeout, eventService, strings) {
     const vm = this;
 
     let overlay;
-    let modal;
     let listeners;
 
     vm.strings = strings;
 
     vm.init = (scope, el) => {
-        [overlay] = el;
-        [modal] = el.find('.at-Modal-window');
+        overlay = el[0]; // eslint-disable-line prefer-destructuring
 
         vm.modal = scope[scope.ns].modal;
         vm.modal.show = vm.show;
         vm.modal.hide = vm.hide;
+        vm.modal.onClose = scope.onClose;
     };
 
     vm.show = (title, message) => {
@@ -35,7 +34,7 @@ function AtModalController (eventService, strings) {
         vm.modal.message = message;
 
         listeners = eventService.addListeners([
-            [window, 'click', vm.clickToHide]
+            [overlay, 'click', vm.clickToHide]
         ]);
 
         overlay.style.display = 'block';
@@ -50,28 +49,21 @@ function AtModalController (eventService, strings) {
         setTimeout(() => {
             overlay.style.display = 'none';
         }, DEFAULT_ANIMATION_DURATION);
+
+        if (vm.modal.onClose) {
+            vm.modal.onClose();
+        }
     };
 
     vm.clickToHide = event => {
-        if (vm.clickIsOutsideModal(event)) {
+        if ($(event.target).hasClass('at-Modal')) {
             vm.hide();
         }
-    };
-
-    vm.clickIsOutsideModal = e => {
-        const m = modal.getBoundingClientRect();
-        const cx = e.clientX;
-        const cy = e.clientY;
-
-        if (cx < m.left || cx > m.right || cy > m.bottom || cy < m.top) {
-            return true;
-        }
-
-        return false;
     };
 }
 
 AtModalController.$inject = [
+    '$timeout',
     'EventService',
     'ComponentsStrings'
 ];

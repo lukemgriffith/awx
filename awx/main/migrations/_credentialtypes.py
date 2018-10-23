@@ -173,3 +173,44 @@ def migrate_job_credentials(apps, schema_editor):
     finally:
         utils.get_current_apps = orig_current_apps
 
+
+def add_vault_id_field(apps, schema_editor):
+    vault_credtype = CredentialType.objects.get(kind='vault')
+    vault_credtype.inputs = CredentialType.defaults.get('vault')().inputs
+    vault_credtype.save()
+
+
+def remove_vault_id_field(apps, schema_editor):
+    vault_credtype = CredentialType.objects.get(kind='vault')
+    idx = 0
+    for i, input in enumerate(vault_credtype.inputs['fields']):
+        if input['id'] == 'vault_id':
+            idx = i
+            break
+    vault_credtype.inputs['fields'].pop(idx)
+    vault_credtype.save()
+
+
+def create_rhv_tower_credtype(apps, schema_editor):
+    CredentialType.setup_tower_managed_defaults()
+
+
+def add_tower_verify_field(apps, schema_editor):
+    tower_credtype = CredentialType.objects.get(
+        kind='cloud', name='Ansible Tower', managed_by_tower=True
+    )
+    tower_credtype.inputs = CredentialType.defaults.get('tower')().inputs
+    tower_credtype.save()
+
+
+def add_azure_cloud_environment_field(apps, schema_editor):
+    azure_rm_credtype = CredentialType.objects.get(kind='cloud',
+                                                   name='Microsoft Azure Resource Manager')
+    azure_rm_credtype.inputs = CredentialType.defaults.get('azure_rm')().inputs
+    azure_rm_credtype.save()
+
+
+def remove_become_methods(apps, schema_editor):
+    become_credtype = CredentialType.objects.filter(kind='ssh', managed_by_tower=True).first()
+    become_credtype.inputs = CredentialType.defaults.get('ssh')().inputs
+    become_credtype.save()

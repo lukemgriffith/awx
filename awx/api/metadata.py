@@ -44,9 +44,9 @@ class Metadata(metadata.SimpleMetadata):
         if placeholder is not serializers.empty:
             field_info['placeholder'] = placeholder
 
-        # Update help text for common fields.
         serializer = getattr(field, 'parent', None)
-        if serializer:
+        if serializer and hasattr(serializer, 'Meta') and hasattr(serializer.Meta, 'model'):
+            # Update help text for common fields.
             field_help_text = {
                 'id': _('Database ID for this {}.'),
                 'name': _('Name of this {}.'),
@@ -59,10 +59,16 @@ class Metadata(metadata.SimpleMetadata):
                 'modified': _('Timestamp when this {} was last modified.'),
             }
             if field.field_name in field_help_text:
-                if hasattr(serializer, 'Meta') and hasattr(serializer.Meta, 'model'):
-                    opts = serializer.Meta.model._meta.concrete_model._meta
-                    verbose_name = smart_text(opts.verbose_name)
-                    field_info['help_text'] = field_help_text[field.field_name].format(verbose_name)
+                opts = serializer.Meta.model._meta.concrete_model._meta
+                verbose_name = smart_text(opts.verbose_name)
+                field_info['help_text'] = field_help_text[field.field_name].format(verbose_name)
+
+            for model_field in serializer.Meta.model._meta.fields:
+                if field.field_name == model_field.name:
+                    field_info['filterable'] = True
+                    break
+            else:
+                field_info['filterable'] = False
 
         # Indicate if a field has a default value.
         # FIXME: Still isn't showing all default values?
@@ -189,23 +195,6 @@ class Metadata(metadata.SimpleMetadata):
             metadata = super(Metadata, self).determine_metadata(request, view)
         finally:
             delattr(view, '_request')
-
-        # Add version number in which view was added to Tower.
-        added_in_version = '1.2'
-        for version in ('3.2.0', '3.1.0', '3.0.0', '2.4.0', '2.3.0', '2.2.0',
-                        '2.1.0', '2.0.0', '1.4.8', '1.4.5', '1.4', '1.3'):
-            if getattr(view, 'new_in_%s' % version.replace('.', ''), False):
-                added_in_version = version
-                break
-        metadata['added_in_version'] = added_in_version
-
-        # Add API version number in which view was added to Tower.
-        added_in_api_version = 'v1'
-        for version in ('v2',):
-            if getattr(view, 'new_in_api_%s' % version, False):
-                added_in_api_version = version
-                break
-        metadata['added_in_api_version'] = added_in_api_version
 
         # Add type(s) handled by this view/serializer.
         if hasattr(view, 'get_serializer'):

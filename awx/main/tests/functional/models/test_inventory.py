@@ -1,5 +1,8 @@
+# -*- coding: utf-8 -*-
+
 import pytest
 import mock
+import six
 
 from django.core.exceptions import ValidationError
 
@@ -9,8 +12,55 @@ from awx.main.models import (
     Inventory,
     InventorySource,
     InventoryUpdate,
+    Job
 )
 from awx.main.utils.filters import SmartFilter
+
+
+@pytest.mark.django_db
+class TestInventoryScript:
+
+    def test_hostvars(self, inventory):
+        inventory.hosts.create(name='ahost', variables={"foo": "bar"})
+        assert inventory.get_script_data(
+            hostvars=True
+        )['_meta']['hostvars']['ahost'] == {
+            'foo': 'bar'
+        }
+
+    def test_towervars(self, inventory):
+        host = inventory.hosts.create(name='ahost')
+        assert inventory.get_script_data(
+            hostvars=True,
+            towervars=True
+        )['_meta']['hostvars']['ahost'] == {
+            'remote_tower_enabled': 'true',
+            'remote_tower_id': host.id
+        }
+
+
+@pytest.mark.django_db
+class TestActiveCount:
+
+    def test_host_active_count(self, organization):
+        inv1 = Inventory.objects.create(name='inv1', organization=organization)
+        inv2 = Inventory.objects.create(name='inv2', organization=organization)
+        assert Host.objects.active_count() == 0
+        inv1.hosts.create(name='host1')
+        inv2.hosts.create(name='host1')
+        assert Host.objects.active_count() == 1
+        inv1.hosts.create(name='host2')
+        assert Host.objects.active_count() == 2
+
+    def test_active_count_minus_tower(self, inventory):
+        inventory.hosts.create(name='locally-managed-host')
+        source = inventory.inventory_sources.create(
+            name='tower-source', source='tower'
+        )
+        source.hosts.create(
+            name='remotely-managed-host', inventory=inventory
+        )
+        assert Host.objects.active_count() == 1
 
 
 @pytest.mark.django_db
@@ -48,6 +98,29 @@ class TestSCMUpdateFeatures:
             scm_inventory_source.description = "I'm testing this!"
             scm_inventory_source.save()
             assert not mck_update.called
+
+
+@pytest.mark.django_db
+class TestRelatedJobs:
+
+    def test_inventory_related(self, inventory):
+        job = Job.objects.create(
+            inventory=inventory
+        )
+        assert job.id in [jerb.id for jerb in inventory._get_related_jobs()]
+
+    def test_related_group_jobs(self, group):
+        job = Job.objects.create(
+            inventory=group.inventory
+        )
+        assert job.id in [jerb.id for jerb in group._get_related_jobs()]
+
+    def test_related_group_update(self, group):
+        src = group.inventory_sources.create(name='foo')
+        job = InventoryUpdate.objects.create(
+            inventory_source=src
+        )
+        assert job.id in [jerb.id for jerb in group._get_related_jobs()]
 
 
 @pytest.mark.django_db
@@ -101,6 +174,30 @@ def setup_inventory_groups(inventory, group_factory):
 
     groupB.hosts.add(host)
     groupB.save()
+
+
+@pytest.mark.django_db
+def test_inventory_update_name(inventory, inventory_source):
+    iu = inventory_source.update()
+    assert inventory_source.name != inventory.name
+    assert iu.name == inventory.name + ' - ' + inventory_source.name
+
+
+@pytest.mark.django_db
+def test_inventory_name_with_unicode(inventory, inventory_source):
+    inventory.name = six.u('オオオ')
+    inventory.save()
+    iu = inventory_source.update()
+    assert iu.name.startswith(inventory.name)
+
+
+@pytest.mark.django_db
+def test_inventory_update_excessively_long_name(inventory, inventory_source):
+    inventory.name = 'a' * 400  # field max length 512
+    inventory_source.name = 'b' * 400
+    iu = inventory_source.update()
+    assert inventory_source.name != inventory.name
+    assert iu.name.startswith(inventory.name)
 
 
 @pytest.mark.django_db

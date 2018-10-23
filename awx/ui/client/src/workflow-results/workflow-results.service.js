@@ -5,7 +5,7 @@
 *************************************************/
 
 
-export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErrors', 'InitiatePlaybookRun', '$interval', 'moment', function ($q, Prompt, $filter, Wait, Rest, $state, ProcessErrors, InitiatePlaybookRun, $interval, moment) {
+export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErrors', 'WorkflowJobModel', '$interval', 'moment', function ($q, Prompt, $filter, Wait, Rest, $state, ProcessErrors, WorkflowJob, $interval, moment) {
     var val = {
         getCounts: function(workflowNodes){
             var nodeArr = [];
@@ -35,22 +35,20 @@ export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErr
         deleteJob: function(workflow) {
             Prompt({
                 hdr: 'Delete Job',
+                resourceName: `#${workflow.id} ` + $filter('sanitize')(workflow.name),
                 body: `<div class='Prompt-bodyQuery'>
-                        Are you sure you want to delete the workflow below?
-                    </div>
-                    <div class='Prompt-bodyTarget'>
-                        #${workflow.id} ${$filter('sanitize')(workflow.name)}
+                        Are you sure you want to delete this workflow?
                     </div>`,
                 action: function() {
                     Wait('start');
                     Rest.setUrl(workflow.url);
                     Rest.destroy()
-                        .success(function() {
+                        .then(() => {
                             Wait('stop');
                             $('#prompt-modal').modal('hide');
                             $state.go('jobs');
                         })
-                        .error(function(obj, status) {
+                        .catch(({obj, status}) => {
                             Wait('stop');
                             $('#prompt-modal').modal('hide');
                             ProcessErrors(null, obj, status, null, {
@@ -67,11 +65,11 @@ export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErr
             var doCancel = function() {
                 Rest.setUrl(workflow.url + 'cancel');
                 Rest.post({})
-                    .success(function() {
+                    .then(() => {
                         Wait('stop');
                         $('#prompt-modal').modal('hide');
                     })
-                    .error(function(obj, status) {
+                    .catch(({obj, status}) => {
                         Wait('stop');
                         $('#prompt-modal').modal('hide');
                         ProcessErrors(null, obj, status, null, {
@@ -84,17 +82,15 @@ export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErr
 
             Prompt({
                 hdr: 'Cancel Workflow',
+                resourceName: `#${workflow.id} ${$filter('sanitize')(workflow.name)}`,
                 body: `<div class='Prompt-bodyQuery'>
-                        Are you sure you want to cancel the workflow below?
-                    </div>
-                    <div class='Prompt-bodyTarget'>
-                        #${workflow.id} ${$filter('sanitize')(workflow.name)}
+                        Are you sure you want to cancel this workflow job?
                     </div>`,
                 action: function() {
                     Wait('start');
                     Rest.setUrl(workflow.url + 'cancel');
                     Rest.get()
-                        .success(function(data) {
+                        .then(({data}) => {
                             if (data.can_cancel === true) {
                                 doCancel();
                             } else {
@@ -111,8 +107,13 @@ export default ['$q', 'Prompt', '$filter', 'Wait', 'Rest', '$state', 'ProcessErr
             });
         },
         relaunchJob: function(scope) {
-            InitiatePlaybookRun({ scope: scope, id: scope.workflow.id,
-                relaunch: true, job_type: 'workflow_job' });
+            const workflowJob = new WorkflowJob();
+
+            workflowJob.postRelaunch({
+                id: scope.workflow.id
+            }).then((launchRes) => {
+                $state.go('workflowResults', { id: launchRes.data.id }, { reload: true });
+            });
         },
         createOneSecondTimer: function(startTime, fn) {
             return $interval(function(){

@@ -290,6 +290,7 @@ export default ['$compile', 'Attr', 'Icon',
                 // gotcha: transcluded elements require custom scope linking - binding to $parent models assumes a very rigid DOM hierarchy
                 // see: lookup-modal.directive.js for example
                 innerTable += options.mode === 'lookup' ? `<tbody ng-init="selection.${list.iterator} = {id: $parent.${list.iterator}, name: $parent.${list.iterator}_name}">` : `"<tbody>\n"`;
+
                 innerTable += "<tr ng-class=\"[" + list.iterator;
                 innerTable += (options.mode === 'lookup' || options.mode === 'select') ? ".success_class" : ".active_class";
 
@@ -313,7 +314,7 @@ export default ['$compile', 'Attr', 'Icon',
                     innerTable += `, {'List-tableRow--selected' : $stateParams['${list.iterator}_id'] == ${list.iterator}.id}`;
                 }
 
-                innerTable += (list.disableRow) ? `, {true: 'List-tableRow--disabled'}[${list.iterator}.pending_deletion]` : "";
+                innerTable += (list.disableRow) ? `, {'List-tableRow--disabled': ${list.disableRowValue}}` : "";
 
                 if (list.multiSelect) {
                     innerTable += ", " + list.iterator + ".isSelected ? 'is-selected-row' : ''";
@@ -323,28 +324,31 @@ export default ['$compile', 'Attr', 'Icon',
                 innerTable += "id=\"{{ " + list.iterator + ".id }}\" ";
                 innerTable += "class=\"List-tableRow " + list.iterator + "_class\" ";
                 innerTable += (list.disableRow) ? " disable-row=\"" + list.disableRow + "\" " : "";
+                if(_.has(list, 'disableTooltip')){
+                    let { placement, tipWatch } = list.disableTooltip;
+                    innerTable += `aw-tool-tip="{{tipWatch}}" data-placement="${placement}" data-tip-watch="${tipWatch}"`;
+                }
                 innerTable += "ng-repeat=\"" + list.iterator + " in " + list.name;
                 innerTable += (list.trackBy) ? " track by " + list.trackBy : "";
                 innerTable += (list.orderBy) ? " | orderBy:'" + list.orderBy + "'" : "";
                 innerTable += (list.filterBy) ? " | filter: " + list.filterBy : "";
                 innerTable += "\">\n";
-
                 if (list.index) {
                     innerTable += "<td class=\"index-column hidden-xs List-tableCell\">{{ $index + ((" + list.iterator + "_page - 1) * " + list.iterator + "_page_size) + 1 }}.</td>\n";
                 }
 
                 if (list.multiSelect) {
-                    innerTable += '<td class="col-xs-1 select-column List-staticColumn--smallStatus"><select-list-item item=\"' + list.iterator + '\"></select-list-item></td>';
+                    innerTable += '<td class="col-xs-1 select-column List-staticColumn--smallStatus"><select-list-item item=\"' + list.iterator + '\" disabled="'+list.disableRowValue+'"></select-list-item></td>';
                 }
 
                 // Change layout if a lookup list, place radio buttons before labels
                 if (options.mode === 'lookup') {
                     if (options.input_type === "radio") { //added by JT so that lookup forms can be either radio inputs or check box inputs
-                        innerTable += `<td class="List-tableCell"> <input type="radio" ng-model="${list.iterator}.checked" ng-value="1" ng-false-value="0" name="check_${list.iterator}_{{${list.iterator}.id}}" ng-click="toggle_row(${list.iterator})"></td>`;
+                        innerTable += `<td class="List-tableCell"> <input type="radio" ng-model="${list.iterator}.checked" ng-value="1" ng-false-value="0" name="check_${list.iterator}_{{${list.iterator}.id}}" ng-click="toggle_row(${list.iterator})" ng-disabled="${list.disableRowValue}"></td>`;
                     }
                     else { // its assumed that options.input_type = checkbox
                         innerTable += "<td class=\"List-tableCell select-column List-staticColumn--smallStatus\"><input type=\"checkbox\" ng-model=\"" + list.iterator + ".checked\" name=\"check_{{" +
-                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ".id, true)\" ng-true-value=\"1\" " +
+                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ", true)\" ng-true-value=\"1\" " +
                             "ng-false-value=\"0\" id=\"check_" + list.iterator + "_{{" + list.iterator + ".id}}\" /></td>";
                     }
                 }
@@ -368,11 +372,11 @@ export default ['$compile', 'Attr', 'Icon',
                 if (options.mode === 'select') {
                     if (options.input_type === "radio") { //added by JT so that lookup forms can be either radio inputs or check box inputs
                         innerTable += "<td class=\"List-tableCell\"><input type=\"radio\" ng-model=\"" + list.iterator + ".checked\" name=\"check_{{" +
-                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ".id, true)\" ng-value=\"1\" " +
+                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ", true)\" ng-value=\"1\" " +
                             "ng-false-value=\"0\" id=\"check_{{" + list.iterator + ".id}}\" /></td>";
                     } else { // its assumed that options.input_type = checkbox
                         innerTable += "<td class=\"List-tableCell\"><input type=\"checkbox\" ng-model=\"" + list.iterator + ".checked\" name=\"check_{{" +
-                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ".id, true)\" ng-true-value=\"1\" " +
+                            list.iterator + ".id }}\" ng-click=\"toggle_" + list.iterator + "(" + list.iterator + ", true)\" ng-true-value=\"1\" " +
                             "ng-false-value=\"0\" id=\"check_{{" + list.iterator + ".id}}\" /></td>";
                     }
                 } else if ((options.mode === 'edit' || options.mode === 'summary') && list.fieldActions) {
@@ -395,58 +399,66 @@ export default ['$compile', 'Attr', 'Icon',
                             }
                             if (field_action === 'pending_deletion') {
                                 innerTable += `<a ng-if='${list.iterator}.pending_deletion'>Pending Delete</a>`;
-                            }
-                            else {
-                                fAction = list.fieldActions[field_action];
-                                innerTable += "<button id=\"";
-                                innerTable += (fAction.id) ? fAction.id : field_action + "-action";
-                                innerTable += "\" ";
-                                innerTable += (fAction.href) ? "href=\"" + fAction.href + "\" " : "";
-                                innerTable += (fAction.ngHref) ? "ng-href=\"" + fAction.ngHref + "\" " : "";
-                                innerTable += "class=\"List-actionButton ";
-                                innerTable += (field_action === 'delete' || field_action === 'cancel') ? "List-actionButton--delete" : "";
-                                innerTable += "\" ";
-                                if(field_action === 'edit') {
-                                    // editStateParams allows us to handle cases where a list might have different types of resources in it.  As a result the edit
-                                    // icon might now always point to the same state and differing states may have differing stateParams.  Specifically this occurs
-                                    // on the Templates list where editing a workflow job template takes you to a state where the param is workflow_job_template_id.
-                                    // You can also edit a Job Template from this list so the stateParam there would be job_template_id.
-                                    if(list.fieldActions[field_action].editStateParams) {
-                                        let matchingConditions = handleEditStateParams(list.fieldActions[field_action].editStateParams);
-                                        innerTable += `ng-class="{'List-editButton--selected' : ${matchingConditions.join(' || ')}}"`;
-                                    }
-                                    else if (list.iterator === 'inventory') {
-                                        innerTable += `ng-class="{'List-editButton--selected': ($stateParams['${list.iterator}_id'] == ${list.iterator}.id) || ($stateParams['smartinventory_id'] == ${list.iterator}.id)}"`;
-                                    }
-                                    else if (list.iterator === 'host') {
-                                        innerTable += `ng-class="{'List-editButton--selected': $stateParams['${list.iterator}_id'] == ${list.iterator}.id && $state.is('inventories.edit.hosts.edit') }"`;
-                                    }
-                                    else {
-                                        innerTable += `ng-class="{'List-editButton--selected' : $stateParams['${list.iterator}_id'] == ${list.iterator}.id}"`;
-                                    }
-                                }
-                                innerTable += (fAction.ngDisabled) ? "ng-disabled=\"" + fAction.ngDisabled + "\"" : "";
-                                innerTable += (fAction.awPopOver) ? "aw-pop-over=\"" + fAction.awPopOver + "\" " : "";
-                                innerTable += (fAction.dataPlacement) ? Attr(fAction, 'dataPlacement') : "";
-                                innerTable += (fAction.dataTitle) ? Attr(fAction, 'dataTitle') : "";
-                                for (itm in fAction) {
-                                    if (itm !== 'ngHref' && itm !== 'href' && itm !== 'label' && itm !== 'icon' && itm !== 'class' &&
-                                        itm !== 'iconClass' && itm !== "dataPlacement" && itm !== "awPopOver" &&
-                                        itm !== "dataTitle") {
-                                        innerTable += Attr(fAction, itm);
-                                    }
-                                }
-                                innerTable += ">";
-                                if (fAction.iconClass) {
-                                    innerTable += "<i class=\"" + fAction.iconClass + "\"></i>";
+                            } else if (field_action === 'submit') {
+                                innerTable += `<at-launch-template template="${list.iterator}" ng-if="${list.iterator}.summary_fields.user_capabilities.start"></at-launch-template>`;
+                            } else {
+                                // Plug in Dropdown Component
+                                if (field_action === 'submit' && list.fieldActions[field_action].relaunch === true) {
+                                    innerTable += `<at-relaunch job="${list.iterator}"></at-relaunch>`;
+                                } else if (field_action === 'submit' && list.fieldActions[field_action].launch === true) {
+                                    innerTable += `<at-launch-template template="${list.iterator}" ng-if="${list.iterator}.summary_fields.user_capabilities.start"></at-launch-template>`;
                                 } else {
-                                    innerTable += SelectIcon({
-                                        action: field_action
-                                    });
+                                    fAction = list.fieldActions[field_action];
+                                    innerTable += "<button id=\"";
+                                    innerTable += (fAction.id) ? fAction.id : field_action + "-action";
+                                    innerTable += "\" ";
+                                    innerTable += (fAction.href) ? "href=\"" + fAction.href + "\" " : "";
+                                    innerTable += (fAction.ngHref) ? "ng-href=\"" + fAction.ngHref + "\" " : "";
+                                    innerTable += "class=\"List-actionButton ";
+                                    innerTable += (field_action === 'delete' || field_action === 'cancel') ? "List-actionButton--delete" : "";
+                                    innerTable += "\" ";
+                                    if(field_action === 'edit') {
+                                        // editStateParams allows us to handle cases where a list might have different types of resources in it.  As a result the edit
+                                        // icon might now always point to the same state and differing states may have differing stateParams.  Specifically this occurs
+                                        // on the Templates list where editing a workflow job template takes you to a state where the param is workflow_job_template_id.
+                                        // You can also edit a Job Template from this list so the stateParam there would be job_template_id.
+                                        if(list.fieldActions[field_action].editStateParams) {
+                                            let matchingConditions = handleEditStateParams(list.fieldActions[field_action].editStateParams);
+                                            innerTable += `ng-class="{'List-editButton--selected' : ${matchingConditions.join(' || ')}}"`;
+                                        }
+                                        else if (list.iterator === 'inventory') {
+                                            innerTable += `ng-class="{'List-editButton--selected': ($stateParams['${list.iterator}_id'] == ${list.iterator}.id) || ($stateParams['smartinventory_id'] == ${list.iterator}.id)}"`;
+                                        }
+                                        else if (list.iterator === 'host') {
+                                            innerTable += `ng-class="{'List-editButton--selected': $stateParams['${list.iterator}_id'] == ${list.iterator}.id && $state.is('inventories.edit.hosts.edit') }"`;
+                                        }
+                                        else {
+                                            innerTable += `ng-class="{'List-editButton--selected' : $stateParams['${list.iterator}_id'] == ${list.iterator}.id}"`;
+                                        }
+                                    }
+                                    innerTable += (fAction.ngDisabled) ? "ng-disabled=\"" + fAction.ngDisabled + "\"" : "";
+                                    innerTable += (fAction.awPopOver) ? "aw-pop-over=\"" + fAction.awPopOver + "\" " : "";
+                                    innerTable += (fAction.dataPlacement) ? Attr(fAction, 'dataPlacement') : "";
+                                    innerTable += (fAction.dataTitle) ? Attr(fAction, 'dataTitle') : "";
+                                    for (itm in fAction) {
+                                        if (itm !== 'ngHref' && itm !== 'href' && itm !== 'label' && itm !== 'icon' && itm !== 'class' &&
+                                            itm !== 'iconClass' && itm !== "dataPlacement" && itm !== "awPopOver" &&
+                                            itm !== "dataTitle") {
+                                            innerTable += Attr(fAction, itm);
+                                        }
+                                    }
+                                    innerTable += ">";
+                                    if (fAction.iconClass) {
+                                        innerTable += "<i class=\"" + fAction.iconClass + "\"></i>";
+                                    } else {
+                                        innerTable += SelectIcon({
+                                            action: field_action
+                                        });
+                                    }
+                                    //html += (fAction.label) ? "<span class=\"list-action-label\"> " + list.fieldActions[field_action].label +
+                                    //    "</span>" : "";
+                                    innerTable += "</button>";
                                 }
-                                //html += (fAction.label) ? "<span class=\"list-action-label\"> " + list.fieldActions[field_action].label +
-                                //    "</span>" : "";
-                                innerTable += "</button>";
                             }
                         }
                     }
@@ -533,24 +545,30 @@ export default ['$compile', 'Attr', 'Icon',
                     }
                 }
                 if (options.mode === 'lookup') {
-                    let customClass = list.fields.name.modalColumnClass || '';
-                    html += `<th
-                            base-path="${list.basePath || list.name}"
-                            collection="${list.name}"
-                            dataset="${list.iterator}_dataset"
-                            column-sort
-                            column-field="name"
-                            column-iterator="${list.iterator}"
-                            column-no-sort="${list.fields.name.nosort}"
-                            column-label="${list.fields.name.label}"
-                            column-custom-class="${customClass}"
-                            query-set="${list.iterator}_queryset">
-                        </th>`;
+                    for (fld in list.fields) {
+                        if(fld === 'name' || _.has(list.fields[fld], 'includeModal')){
+                            let customClass = list.fields.name.modalColumnClass || '';
+                            html += `<th
+                                base-path="${list.basePath || list.name}"
+                                collection="${list.name}"
+                                dataset="${list.iterator}_dataset"
+                                column-sort
+                                column-field="name"
+                                column-iterator="${list.iterator}"
+                                column-no-sort="${list.fields.name.nosort}"
+                                column-label="${list.fields[fld].label}"
+                                column-custom-class="${customClass}"
+                                query-set="${list.iterator}_queryset">
+                            </th>`;
+                        }
+                        
+                    }
 
                     if(list.fields.info) {
-                        customClass = list.fields.name.modalColumnClass || '';
+                        let customClass = list.fields.name.modalColumnClass || '';
+                        const infoHeaderClass = _.get(list.fields.info, 'infoHeaderClass', 'List-tableHeader--info');
                         html += `<th
-                                    class="List-tableHeader--info"
+                                    class="${infoHeaderClass}"
                                     base-path="${list.basePath || list.name}"
                                     collection="${list.name}"
                                     dataset="${list.iterator}_dataset"
@@ -579,11 +597,16 @@ export default ['$compile', 'Attr', 'Icon',
             },
 
             wrapPanel: function(html){
-                return `<div class="Panel">${html}</div>`;
+                return `
+                <div class="Panel">${html}</div>`;
             },
 
             insertFormView: function(){
                 return `<div ui-view="form"></div>`;
+            },
+
+            insertSchedulerView: function(){
+                return `<div ui-view="scheduler"></div>`;
             }
         };
     }

@@ -29,7 +29,7 @@
                     default-params="host_default_params"
                     query-set="host_queryset"
                     search-tags="searchTags">
-                </smart-search>
+                </smart-search>  
             </div>
 
             <div class="row" ng-show="hosts.length === 0 && !(searchTags | isEmpty)">
@@ -50,7 +50,7 @@
                     <tbody>
                         <tr ng-class="{'List-tableRow--selected': $stateParams['host_id'] == host.id}" id="{{ host.id }}" class="List-tableRow host_class" ng-repeat="host in hosts track by host.id">
                             <td class="List-tableCell toggleHost-column List-staticColumn--toggle">
-                                <div class="ScheduleToggle" ng-class="{'is-on': host.enabled, 'ScheduleToggle--disabled': host.has_inventory_sources}" aw-tool-tip="<p>Indicates if a host is available and should be included in running jobs.</p><p>For hosts that are part of an external inventory, this flag cannot be changed. It will be set by the inventory sync process.</p>" data-placement="right" data-tip-watch="undefined">
+                                <div class="ScheduleToggle" ng-class="{'is-on': host.enabled, 'ScheduleToggle--disabled': host.has_inventory_sources}" aw-tool-tip="{{strings.get('hostList.DISABLED_TOGGLE_TOOLTIP')}}" data-placement="right" data-tip-watch="undefined">
                                     <button ng-disabled="host.has_inventory_sources" ng-show="host.enabled" class="ScheduleToggle-switch is-on" ng-click="toggleHost($event, host)" translate>ON</button>
                                     <button ng-disabled="host.has_inventory_sources" ng-show="!host.enabled" class="ScheduleToggle-switch" ng-click="toggleHost($event, host)" translate>OFF</button>
                                 </div>
@@ -64,23 +64,23 @@
                             </td>
                             <td class="List-tableCell name-column InventoryManage-breakWord col-lg-6 col-md-8 col-sm-8 col-xs-7">
                                 <div class="host-name">
-                                    <a href="" ng-click="editHost(host.id)">{{host.name }}</a>
+                                    <a ui-sref="hosts.edit({host_id:host.id})">{{host.name }}</a>
                                 </div>
                             </td>
                             <td class="List-tableCell inventory_name-column col-lg-5 col-md-4 col-sm-4 hidden-xs elllipsis">
                                 <div class="host-name">
-                                    <a href="" ng-click="editInventory(host)">{{host.inventory_name }}</a>
+                                    <a href="#/inventories/inventory/{{host.inventory}}">{{host.inventory_name}}</a>
                                 </div>
                             </td>
                             <td class="List-actionsContainer">
                                 <div class="List-actionButtonCell List-tableCell">
-                                    <button id="insights-action" class="List-actionButton " ng-class="{'List-actionButton--selected' : $stateParams['host_id'] == host.id && $state.is('hosts.edit.insights')}" data-placement="top" ng-click="goToInsights(host.id)" aw-tool-tip="View Insights Data" ng-show="host.insights_system_id && host.summary_fields.inventory.hasOwnProperty('insights_credential_id')">
+                                    <button id="insights-action" class="List-actionButton " ng-class="{'List-actionButton--selected' : $stateParams['host_id'] == host.id && $state.is('hosts.edit.insights')}" data-placement="top" ng-click="goToInsights(host.id)" aw-tool-tip="{{strings.get('inventory.VIEW_INSIGHTS')}}" data-tip-watch="strings.get('inventory.VIEW_INSIGHTS')" ng-show="host.insights_system_id && host.summary_fields.inventory.hasOwnProperty('insights_credential_id')">
                                         <i class="fa fa-info"></i>
                                     </button>
-                                    <button id="edit-action" class="List-actionButton " ng-class="{'List-editButton--selected' : $stateParams['host_id'] == host.id && $state.is('hosts.edit') }" data-placement="top" ng-click="editHost(host.id)" aw-tool-tip="Edit host" ng-show="host.summary_fields.user_capabilities.edit">
+                                    <button id="edit-action" class="List-actionButton " ng-class="{'List-editButton--selected' : $stateParams['host_id'] == host.id && $state.is('hosts.edit') }" data-placement="top" ng-click="editHost(host.id)" aw-tool-tip="{{strings.get('inventory.EDIT_HOST')}}"   data-tip-watch="strings.get('inventory.VIEW_HOST')" ng-show="host.summary_fields.user_capabilities.edit">
                                         <i class="fa fa-pencil"></i>
                                     </button>
-                                    <button id="view-action" class="List-actionButton " data-placement="top" ng-click="editHost(host.id)" aw-tool-tip="View host" ng-show="!host.summary_fields.user_capabilities.edit"><i class="fa fa-search-plus"></i>
+                                    <button id="view-action" class="List-actionButton " data-placement="top" ng-click="editHost(host.id)" aw-tool-tip="{{strings.get('inventory.VIEW_HOST')}}" data-tip-watch="strings.get('inventory.VIEW_HOST')" ng-show="!host.summary_fields.user_capabilities.edit"><i class="fa fa-search-plus"></i>
                                     </button>
                                 </div>
                             </td>

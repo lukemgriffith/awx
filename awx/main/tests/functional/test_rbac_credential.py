@@ -1,5 +1,7 @@
 import pytest
 
+import mock
+
 from awx.main.access import CredentialAccess
 from awx.main.models.credential import Credential
 from django.contrib.auth.models import User
@@ -23,6 +25,21 @@ def test_credential_access_superuser():
 
 
 @pytest.mark.django_db
+def test_credential_access_self(rando):
+    access = CredentialAccess(rando)
+    assert access.can_add({'user': rando.pk})
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('ext_auth', [True, False])
+def test_credential_access_org_user(org_member, org_admin, ext_auth):
+    access = CredentialAccess(org_admin)
+    with mock.patch('awx.main.access.settings') as settings_mock:
+        settings_mock.MANAGE_ORGANIZATION_AUTH = ext_auth
+        assert access.can_add({'user': org_member.pk})
+
+
+@pytest.mark.django_db
 def test_credential_access_auditor(credential, organization_factory):
     objects = organization_factory("org_cred_auditor",
                                    users=["user1"],
@@ -35,9 +52,31 @@ def test_credential_access_auditor(credential, organization_factory):
 
 
 @pytest.mark.django_db
-def test_org_credential_access_member(alice, org_credential, credential):
-    org_credential.admin_role.members.add(alice)
+def test_credential_access_member(alice, credential):
     credential.admin_role.members.add(alice)
+    access = CredentialAccess(alice)
+    assert access.can_change(credential, {
+        'description': 'New description.',
+        'organization': None})
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("role_name", ["admin_role", "credential_admin_role"])
+def test_org_credential_access_admin(role_name, alice, org_credential):
+    role = getattr(org_credential.organization, role_name)
+    role.members.add(alice)
+
+    access = CredentialAccess(alice)
+
+    # Alice should be able to PATCH if organization is not changed
+    assert access.can_change(org_credential, {
+        'description': 'New description.',
+        'organization': org_credential.organization.pk})
+
+
+@pytest.mark.django_db
+def test_org_credential_access_member(alice, org_credential):
+    org_credential.admin_role.members.add(alice)
 
     access = CredentialAccess(alice)
 
@@ -47,9 +86,6 @@ def test_org_credential_access_member(alice, org_credential, credential):
         'organization': org_credential.organization.pk})
     assert access.can_change(org_credential, {
         'description': 'New description.'})
-    assert access.can_change(credential, {
-        'description': 'New description.',
-        'organization': None})
 
 
 @pytest.mark.django_db

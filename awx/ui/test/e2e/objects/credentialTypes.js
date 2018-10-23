@@ -28,7 +28,7 @@ const addEditPanel = {
 const listPanel = {
     selector: 'div[ui-view="list"]',
     elements: {
-        add: '.List-buttonSubmit',
+        add: '#button-add',
         badge: 'div[class="List-titleBadge]',
         titleText: 'div[class="List-titleText"]',
         noitems: 'div[class="List-noItems"]'
@@ -52,6 +52,12 @@ module.exports = {
     url () {
         return `${this.api.globals.launch_url}/#/credential_types`;
     },
+    commands: [{
+        load () {
+            this.api.url('data:,'); // https://github.com/nightwatchjs/nightwatch/issues/1724
+            return this.navigate();
+        },
+    }],
     sections: {
         header,
         breadcrumb,

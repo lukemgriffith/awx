@@ -4,8 +4,8 @@
  * All Rights Reserved
  *************************************************/
 
-export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'GetBasePath', 'ProcessErrors',
-    function($state, moment, $timeout, $window, $filter, Rest, GetBasePath, ProcessErrors) {
+export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'GetBasePath', 'ProcessErrors', 'TemplatesStrings',
+    function($state, moment, $timeout, $window, $filter, Rest, GetBasePath, ProcessErrors, TemplatesStrings) {
 
     return {
         scope: {
@@ -21,7 +21,7 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
         restrict: 'E',
         link: function(scope, element) {
 
-            let margin = {top: 20, right: 20, bottom: 20, left: 20},
+            let marginLeft = 20,
                 i = 0,
                 nodeW = 180,
                 nodeH = 60,
@@ -36,7 +36,8 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                 line,
                 zoomObj,
                 baseSvg,
-                svgGroup;
+                svgGroup,
+                graphLoaded;
 
             scope.dimensionsSet = false;
 
@@ -75,7 +76,8 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                     );
 
                 svgGroup = baseSvg.append("g")
-                            .attr("transform", "translate(" + margin.left + "," + (windowHeight/2 - rootH/2 - startNodeOffsetY) + ")");
+                    .attr("id", "aw-workflow-chart-g")
+                    .attr("transform", "translate(" + marginLeft + "," + (windowHeight/2 - rootH/2 - startNodeOffsetY) + ")");
             }
 
             function calcAvailableScreenSpace() {
@@ -158,7 +160,7 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                 let scale = d3.event.scale,
                     translation = d3.event.translate;
 
-                translation = [translation[0] + (margin.left*scale), translation[1] + ((windowHeight/2 - rootH/2 - startNodeOffsetY)*scale)];
+                translation = [translation[0] + (marginLeft*scale), translation[1] + ((windowHeight/2 - rootH/2 - startNodeOffsetY)*scale)];
 
                 svgGroup.attr("transform", "translate(" + translation + ")scale(" + scale + ")");
 
@@ -177,7 +179,7 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                 translateX = unscaledOffsetX*scale - ((scale*windowWidth)-windowWidth)/2,
                 translateY = unscaledOffsetY*scale - ((scale*windowHeight)-windowHeight)/2;
 
-                svgGroup.attr("transform", "translate(" + [translateX + (margin.left*scale), translateY + ((windowHeight/2 - rootH/2 - startNodeOffsetY)*scale)] + ")scale(" + scale + ")");
+                svgGroup.attr("transform", "translate(" + [translateX + (marginLeft*scale), translateY + ((windowHeight/2 - rootH/2 - startNodeOffsetY)*scale)] + ")scale(" + scale + ")");
                 zoomObj.scale(scale);
                 zoomObj.translate([translateX, translateY]);
             }
@@ -200,10 +202,34 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
             }
 
             function resetZoomAndPan() {
-                svgGroup.attr("transform", "translate(" + margin.left + "," + (windowHeight/2 - rootH/2 - startNodeOffsetY) + ")scale(" + 1 + ")");
+                svgGroup.attr("transform", "translate(" + marginLeft + "," + (windowHeight/2 - rootH/2 - startNodeOffsetY) + ")scale(" + 1 + ")");
                 // Update the zoomObj
                 zoomObj.scale(1);
                 zoomObj.translate([0,0]);
+            }
+
+            function zoomToFitChart() {
+                let graphDimensions = d3.select('#aw-workflow-chart-g')[0][0].getBoundingClientRect(),
+                startNodeDimensions = d3.select('.WorkflowChart-rootNode')[0][0].getBoundingClientRect(),
+                availableScreenSpace = calcAvailableScreenSpace(),
+                currentZoomValue = zoomObj.scale(),
+                unscaledH = graphDimensions.height/currentZoomValue,
+                unscaledW = graphDimensions.width/currentZoomValue,
+                scaleNeededForMaxHeight = (availableScreenSpace.height)/unscaledH,
+                scaleNeededForMaxWidth = (availableScreenSpace.width - marginLeft)/unscaledW,
+                lowerScale = Math.min(scaleNeededForMaxHeight, scaleNeededForMaxWidth),
+                scaleToFit = lowerScale < 0.5 ? 0.5 : (lowerScale > 2 ? 2 : Math.floor(lowerScale * 10)/10),
+                startNodeOffsetFromGraphCenter = Math.round((((rootH/2) + (startNodeDimensions.top/currentZoomValue)) - ((graphDimensions.top/currentZoomValue) + (unscaledH/2)))*scaleToFit);
+
+                manualZoom(scaleToFit*100);
+
+                scope.workflowZoomed({
+                    zoom: scaleToFit
+                });
+
+                svgGroup.attr("transform", "translate(" + marginLeft + "," + (windowHeight/2 - (nodeH*scaleToFit/2) + startNodeOffsetFromGraphCenter) + ")scale(" + scaleToFit + ")");
+                zoomObj.translate([marginLeft - scaleToFit*marginLeft, windowHeight/2 - (nodeH*scaleToFit/2) + startNodeOffsetFromGraphCenter - ((windowHeight/2 - rootH/2 - startNodeOffsetY)*scaleToFit)]);
+
             }
 
             function update() {
@@ -243,7 +269,6 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                             thisNode.append("rect")
                                 .attr("width", rootW)
                                 .attr("height", rootH)
-                                //.attr("y", (windowHeight-margin.top-margin.bottom)/2 - rootH)
                                 .attr("y", 10)
                                 .attr("rx", 5)
                                 .attr("ry", 5)
@@ -252,11 +277,10 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                                 .call(add_node);
                             thisNode.append("text")
                                 .attr("x", 13)
-                                //.attr("y", (windowHeight-margin.top-margin.bottom)/2 - rootH + rootH/2)
                                 .attr("y", 30)
                                 .attr("dy", ".35em")
                                 .attr("class", "WorkflowChart-startText")
-                                .text(function () { return "START"; })
+                                .text(function () { return TemplatesStrings.get('workflow_maker.START'); })
                                 .call(add_node);
                         }
                         else {
@@ -304,23 +328,13 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                                 }).each(wrap);
 
                             thisNode.append("foreignObject")
-                                 .attr("x", 54)
-                                 .attr("y", 45)
-                                 .style("font-size","0.7em")
-                                 .attr("class", "WorkflowChart-conflictText")
-                                 .html(function () {
-                                     return "<span class=\"WorkflowChart-conflictIcon\">\uf06a</span><span> EDGE CONFLICT</span>";
-                                 })
-                                 .style("display", function(d) { return (d.edgeConflict && !d.placeholder) ? null : "none"; });
-
-                            thisNode.append("foreignObject")
                                 .attr("x", 62)
                                 .attr("y", 22)
                                 .attr("dy", ".35em")
                                 .attr("text-anchor", "middle")
                                 .attr("class", "WorkflowChart-defaultText WorkflowChart-deletedText")
                                 .html(function () {
-                                    return "<span>DELETED</span>";
+                                    return `<span>${TemplatesStrings.get('workflow_maker.DELETED')}</span>`;
                                 })
                                 .style("display", function(d) { return d.unifiedJobTemplate || d.placeholder ? "none" : null; });
 
@@ -399,7 +413,7 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                                 .attr("class", "WorkflowChart-detailsLink")
                                 .style("display", function(d){ return d.job && d.job.status && d.job.id ? null : "none"; })
                                 .text(function () {
-                                    return "DETAILS";
+                                    return TemplatesStrings.get('workflow_maker.DETAILS');
                                 })
                                 .call(details);
                             thisNode.append("circle")
@@ -511,6 +525,9 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                                             case "error":
                                                 statusClass += "workflowChart-nodeStatus--failed";
                                                 break;
+                                            case "canceled":
+                                                statusClass += "workflowChart-nodeStatus--canceled";
+                                                break;
                                         }
                                     }
 
@@ -543,6 +560,12 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                     });
 
                     node.exit().remove();
+
+                    if(nodes && nodes.length > 1 && !graphLoaded) {
+                        zoomToFitChart();
+                    }
+
+                    graphLoaded = true;
 
                     let link = svgGroup.selectAll("g.link")
                         .data(links, function(d) {
@@ -755,6 +778,9 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
                                     case "error":
                                         statusClass += "workflowChart-nodeStatus--failed";
                                         break;
+                                    case "canceled":
+                                        statusClass += "workflowChart-nodeStatus--canceled";
+                                        break;
                                 }
                             }
 
@@ -794,9 +820,6 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
 
                     t.selectAll(".WorkflowChart-deletedText")
                         .style("display", function(d){ return d.unifiedJobTemplate || d.placeholder ? "none" : null; });
-
-                    t.selectAll(".WorkflowChart-conflictText")
-                        .style("display", function(d) { return (d.edgeConflict && !d.placeholder) ? null : "none"; });
 
                     t.selectAll(".WorkflowChart-activeNode")
                         .style("display", function(d) { return d.isActiveEdit ? null : "none"; });
@@ -868,13 +891,13 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
 
                     let goToJobResults = function(job_type) {
                         if(job_type === 'job') {
-                            $state.go('jobResult', {id: d.job.id});
+                            $state.go('output', {id: d.job.id, type: 'playbook'});
                         }
                         else if(job_type === 'inventory_update') {
-                            $state.go('inventorySyncStdout', {id: d.job.id});
+                            $state.go('output', {id: d.job.id, type: 'inventory'});
                         }
                         else if(job_type === 'project_update') {
-                            $state.go('scmUpdateStdout', {id: d.job.id});
+                            $state.go('output', {id: d.job.id, type: 'project'});
                         }
                     };
 
@@ -889,12 +912,12 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
 
                             Rest.setUrl(GetBasePath("unified_jobs") + "?id=" + d.job.id);
                             Rest.get()
-                            .success(function (res) {
-                                if(res.results && res.results.length > 0) {
-                                    goToJobResults(res.results[0].type);
+                            .then(function (res) {
+                                if(res.data.results && res.data.results.length > 0) {
+                                    goToJobResults(res.data.results[0].type);
                                 }
                             })
-                            .error(function (data, status) {
+                            .catch(({data, status}) => {
                                 ProcessErrors(scope, data, status, null, { hdr: 'Error!', msg: 'Unable to get job: ' + status });
                             });
                         }
@@ -925,6 +948,10 @@ export default ['$state','moment', '$timeout', '$window', '$filter', 'Rest', 'Ge
 
             scope.$on('zoomWorkflowChart', function(evt, params) {
                 manualZoom(params.zoom);
+            });
+
+            scope.$on('zoomToFitChart', function() {
+                zoomToFitChart();
             });
 
             let clearWatchTreeData = scope.$watch('treeData', function(newVal) {

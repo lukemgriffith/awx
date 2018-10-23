@@ -33,29 +33,44 @@ ROLE_SINGLETON_SYSTEM_ADMINISTRATOR='system_administrator'
 ROLE_SINGLETON_SYSTEM_AUDITOR='system_auditor'
 
 role_names = {
-    'system_administrator' : _('System Administrator'),
-    'system_auditor'       : _('System Auditor'),
-    'adhoc_role'           : _('Ad Hoc'),
-    'admin_role'           : _('Admin'),
-    'auditor_role'         : _('Auditor'),
-    'execute_role'         : _('Execute'),
-    'member_role'          : _('Member'),
-    'read_role'            : _('Read'),
-    'update_role'          : _('Update'),
-    'use_role'             : _('Use'),
+    'system_administrator': _('System Administrator'),
+    'system_auditor': _('System Auditor'),
+    'adhoc_role': _('Ad Hoc'),
+    'admin_role': _('Admin'),
+    'project_admin_role': _('Project Admin'),
+    'inventory_admin_role': _('Inventory Admin'),
+    'credential_admin_role': _('Credential Admin'),
+    'job_template_admin_role': _('Job Template Admin'),
+    'workflow_admin_role': _('Workflow Admin'),
+    'notification_admin_role': _('Notification Admin'),
+    'auditor_role': _('Auditor'),
+    'execute_role': _('Execute'),
+    'member_role': _('Member'),
+    'read_role': _('Read'),
+    'update_role': _('Update'),
+    'use_role': _('Use'),
 }
 
 role_descriptions = {
-    'system_administrator' : _('Can manage all aspects of the system'),
-    'system_auditor'       : _('Can view all settings on the system'),
-    'adhoc_role'           : _('May run ad hoc commands on an inventory'),
-    'admin_role'           : _('Can manage all aspects of the %s'),
-    'auditor_role'         : _('Can view all settings for the %s'),
-    'execute_role'         : _('May run the %s'),
-    'member_role'          : _('User is a member of the %s'),
-    'read_role'            : _('May view settings for the %s'),
-    'update_role'          : _('May update project or inventory or group using the configured source update system'),
-    'use_role'             : _('Can use the %s in a job template'),
+    'system_administrator': _('Can manage all aspects of the system'),
+    'system_auditor': _('Can view all settings on the system'),
+    'adhoc_role': _('May run ad hoc commands on an inventory'),
+    'admin_role': _('Can manage all aspects of the %s'),
+    'project_admin_role': _('Can manage all projects of the %s'),
+    'inventory_admin_role': _('Can manage all inventories of the %s'),
+    'credential_admin_role': _('Can manage all credentials of the %s'),
+    'job_template_admin_role': _('Can manage all job templates of the %s'),
+    'workflow_admin_role': _('Can manage all workflows of the %s'),
+    'notification_admin_role': _('Can manage all notifications of the %s'),
+    'auditor_role': _('Can view all settings for the %s'),
+    'execute_role': {
+        'organization': _('May run any executable resources in the organization'),
+        'default': _('May run the %s'),
+    },
+    'member_role': _('User is a member of the %s'),
+    'read_role': _('May view settings for the %s'),
+    'update_role': _('May update project or inventory or group using the configured source update system'),
+    'use_role': _('Can use the %s in a job template'),
 }
 
 
@@ -140,6 +155,12 @@ class Role(models.Model):
     object_id = models.PositiveIntegerField(null=True, default=None)
     content_object = GenericForeignKey('content_type', 'object_id')
 
+    def __unicode__(self):
+        if 'role_field' in self.__dict__:
+            return u'%s-%s' % (self.name, self.pk)
+        else:
+            return u'%s-%s' % (self._meta.verbose_name, self.pk)
+
     def save(self, *args, **kwargs):
         super(Role, self).save(*args, **kwargs)
         self.rebuild_role_ancestor_list([self.id], [])
@@ -153,7 +174,7 @@ class Role(models.Model):
         elif accessor.__class__.__name__ == 'Team':
             return self.ancestors.filter(pk=accessor.member_role.id).exists()
         elif type(accessor) == Role:
-            return self.ancestors.filter(pk=accessor).exists()
+            return self.ancestors.filter(pk=accessor.pk).exists()
         else:
             accessor_type = ContentType.objects.get_for_model(accessor)
             roles = Role.objects.filter(content_type__pk=accessor_type.id,
@@ -170,12 +191,22 @@ class Role(models.Model):
         global role_descriptions
         description = role_descriptions[self.role_field]
         content_type = self.content_type
-        if '%s' in description and content_type:
+
+        model_name = None
+        if content_type:
             model = content_type.model_class()
             model_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', model.__name__).lower()
-            description = description % model_name
 
-        return description
+        value = description
+        if type(description) == dict:
+            value = description.get(model_name)
+            if value is None:
+                value = description.get('default')
+
+        if '%s' in value and content_type:
+                    value = value % model_name
+
+        return value
 
     @staticmethod
     def rebuild_role_ancestor_list(additions, removals):
@@ -372,48 +403,26 @@ class Role(models.Model):
 
 
     @staticmethod
-    @check_singleton
     def visible_roles(user):
-        sql_params = {
-            'ancestors_table': Role.ancestors.through._meta.db_table,
-            'parents_table': Role.parents.through._meta.db_table,
-            'roles_table': Role._meta.db_table,
-            'ids': ','.join(str(x) for x in user.roles.values_list('id', flat=True)),
-        }
-
-        qs = Role.objects.extra(
-            where = ['''
-                    %(roles_table)s.id IN (
-                        SELECT DISTINCT visible_roles_t2.ancestor_id
-                          FROM %(ancestors_table)s as visible_roles_t1
-                               LEFT JOIN %(ancestors_table)s as visible_roles_t2 ON (visible_roles_t1.descendent_id = visible_roles_t2.descendent_id)
-                         WHERE visible_roles_t1.ancestor_id IN (%(ids)s)
-                    )
-                    ''' % sql_params]
-        )
-        return qs
+        return Role.filter_visible_roles(user, Role.objects.all())
 
     @staticmethod
     @check_singleton
     def filter_visible_roles(user, roles_qs):
-        sql_params = {
-            'ancestors_table': Role.ancestors.through._meta.db_table,
-            'parents_table': Role.parents.through._meta.db_table,
-            'roles_table': Role._meta.db_table,
-            'ids': ','.join(str(x) for x in user.roles.all().values_list('id', flat=True))
-        }
-
-        qs = roles_qs.extra(
-            where = ['''
-                EXISTS (
-                    SELECT 1
-                      FROM %(ancestors_table)s as visible_roles_t1
-                           LEFT JOIN %(ancestors_table)s as visible_roles_t2 ON (visible_roles_t1.descendent_id = visible_roles_t2.descendent_id)
-                     WHERE visible_roles_t1.ancestor_id = %(roles_table)s.id
-                           AND visible_roles_t2.ancestor_id IN (%(ids)s)
-                ) ''' % sql_params]
+        '''
+        Visible roles include all roles that are ancestors of any
+        roles that the user has access to.
+        Case in point - organization auditor_role must see all roles
+        in their organization, but some of those roles descend from
+        organization admin_role, but not auditor_role.
+        '''
+        return roles_qs.filter(
+            id__in=RoleAncestorEntry.objects.filter(
+                descendent__in=RoleAncestorEntry.objects.filter(
+                    ancestor_id__in=list(user.roles.values_list('id', flat=True))
+                ).values_list('descendent', flat=True)
+            ).distinct().values_list('ancestor', flat=True)
         )
-        return qs
 
     @staticmethod
     def singleton(name):
@@ -477,13 +486,25 @@ def role_summary_fields_generator(content_object, role_field):
     global role_names
     summary = {}
     description = role_descriptions[role_field]
+
+    model_name = None
     content_type = ContentType.objects.get_for_model(content_object)
-    if '%s' in description and content_type:
+    if content_type:
         model = content_object.__class__
         model_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', model.__name__).lower()
-        description = description % model_name
 
-    summary['description'] = description
+    value = description
+    if type(description) == dict:
+        value = None
+        if model_name:
+            value = description.get(model_name)
+        if value is None:
+            value = description.get('default')
+
+    if '%s' in value and model_name:
+        value = value % model_name
+
+    summary['description'] = value
     summary['name'] = role_names[role_field]
     summary['id'] = getattr(content_object, '{}_id'.format(role_field))
     return summary

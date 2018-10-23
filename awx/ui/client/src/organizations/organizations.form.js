@@ -41,7 +41,19 @@ export default ['NotificationsList', 'i18n',
                     dataTitle: i18n._('Instance Groups'),
                     dataContainer: 'body',
                     dataPlacement: 'right',
-                    control: '<instance-groups-multiselect instance-groups="instance_groups" field-is-disabled="!(organization_obj.summary_fields.user_capabilities.edit || canAdd)"></instance-groups-multiselect>',
+                    control: '<instance-groups-multiselect instance-groups="instance_groups" field-is-disabled="!(organization_obj.summary_fields.user_capabilities.edit || canAdd) || (!current_user.is_superuser && isOrgAdmin)"></instance-groups-multiselect>',
+                },
+                custom_virtualenv: {
+                    label: i18n._('Ansible Environment'),
+                    defaultText: i18n._('Use Default Environment'),
+                    type: 'select',
+                    ngOptions: 'venv for venv in custom_virtualenvs_options track by venv',
+                    awPopOver: "<p>" + i18n._("Select the custom Python virtual environment for this organization to run on.") + "</p>",
+                    dataTitle: i18n._('Ansible Environment'),
+                    dataContainer: 'body',
+                    dataPlacement: 'right',
+                    ngDisabled: '!(organization_obj.summary_fields.user_capabilities.edit || canAdd)',
+                    ngShow: 'custom_virtualenvs_visible'
                 }
             },
 
@@ -80,8 +92,8 @@ export default ['NotificationsList', 'i18n',
                             ngClick: "$state.go('.add')",
                             label: i18n._('Add'),
                             awToolTip: i18n._('Add Users to this organization.'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; ' + i18n._('ADD'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(organization_obj.summary_fields.user_capabilities.edit || canAdd)'
                         }
                     },
@@ -98,6 +110,51 @@ export default ['NotificationsList', 'i18n',
                             type: 'role',
                             nosort: true,
                             class: 'col-lg-4 col-md-4 col-sm-4 col-xs-4'
+                        }
+                    }
+                },
+                permissions: {
+                    name: 'permissions',
+                    awToolTip: i18n._('Please save before assigning permissions.'),
+                    djangoModel: 'access_list',
+                    dataPlacement: 'top',
+                    basePath: 'api/v2/organizations/{{$stateParams.organization_id}}/access_list/',
+                    search: {
+                        order_by: 'username'
+                    },
+                    type: 'collection',
+                    title: i18n._('Permissions'),
+                    iterator: 'permission',
+                    index: false,
+                    open: false,
+                    actions: {
+                        add: {
+                            ngClick: "$state.go('.add')",
+                            label: 'Add',
+                            awToolTip: i18n._('Add a permission'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
+                            ngShow: '(organization_obj.summary_fields.user_capabilities.edit || canAdd)'
+                        }
+                    },
+                    fields: {
+                        username: {
+                            key: true,
+                            label: i18n._('User'),
+                            linkBase: 'users',
+                            class: 'col-lg-3 col-md-3 col-sm-3 col-xs-4'
+                        },
+                        role: {
+                            label: i18n._('Role'),
+                            type: 'role',
+                            nosort: true,
+                            class: 'col-lg-4 col-md-4 col-sm-4 col-xs-4',
+                        },
+                        team_roles: {
+                            label: i18n._('Team Roles'),
+                            type: 'team_roles',
+                            nosort: true,
+                            class: 'col-lg-5 col-md-5 col-sm-5 col-xs-4',
                         }
                     }
                 },

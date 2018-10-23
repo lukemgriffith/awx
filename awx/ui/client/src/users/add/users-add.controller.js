@@ -14,10 +14,10 @@ const user_type_options = [
 
 export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
     'Alert', 'ProcessErrors', 'ReturnToCaller', 'GetBasePath',
-    'Wait', 'CreateSelect2', '$state', '$location', 'i18n',
+    'Wait', 'CreateSelect2', '$state', '$location', 'i18n', 'canAdd',
     function($scope, $rootScope, UserForm, GenerateForm, Rest, Alert,
     ProcessErrors, ReturnToCaller, GetBasePath, Wait, CreateSelect2,
-    $state, $location, i18n) {
+    $state, $location, i18n, canAdd) {
 
         var defaultUrl = GetBasePath('organizations'),
             form = UserForm;
@@ -28,6 +28,7 @@ export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
             // apply form definition's default field values
             GenerateForm.applyDefaults(form, $scope);
 
+            $scope.canAdd = canAdd;
             $scope.isAddForm = true;
             $scope.ldap_user = false;
             $scope.not_ldap_user = !$scope.ldap_user;
@@ -37,7 +38,7 @@ export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
 
             Rest.setUrl(GetBasePath('users'));
             Rest.options()
-                .success(function(data) {
+                .then(({data}) => {
                     if (!data.actions.POST) {
                         $state.go("^");
                         Alert(i18n._('Permission Error'), i18n._('You do not have permission to add a user.'), 'alert-info');
@@ -85,7 +86,7 @@ export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
                     data.is_system_auditor = $scope.is_system_auditor;
                     Wait('start');
                     Rest.post(data)
-                        .success(function(data) {
+                        .then(({data}) => {
                             var base = $location.path().replace(/^\//, '').split('/')[0];
                             if (base === 'users') {
                                 $rootScope.flashMessage = i18n._('New user successfully created!');
@@ -95,7 +96,7 @@ export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
                                 ReturnToCaller(1);
                             }
                         })
-                        .error(function(data, status) {
+                        .catch(({data, status}) => {
                             ProcessErrors($scope, data, status, form, { hdr: i18n._('Error!'), msg: i18n._('Failed to add new user. POST returned status: ') + status });
                         });
                 } else {
@@ -109,10 +110,11 @@ export default ['$scope', '$rootScope', 'UserForm', 'GenerateForm', 'Rest',
         };
 
         // Password change
-        $scope.clearPWConfirm = function(fld) {
+        $scope.clearPWConfirm = function() {
             // If password value changes, make sure password_confirm must be re-entered
-            $scope[fld] = '';
-            $scope[form.name + '_form'][fld].$setValidity('awpassmatch', false);
+            $scope.password_confirm = '';
+            let passValidity = (!$scope.password || $scope.password === '') ? true : false;
+            $scope[form.name + '_form'].password_confirm.$setValidity('awpassmatch', passValidity);
         };
     }
 ];
